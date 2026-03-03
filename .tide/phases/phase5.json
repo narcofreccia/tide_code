@@ -1,0 +1,166 @@
+{
+  "project": "Tide IDE — Agentic Coding Environment",
+  "phase": 5,
+  "name": "M4: Plan → Execute → Validate",
+  "description": "Build the agentic workflow: Planner writes .tide/features/*.json plans, Builder executes tasks step-by-step with tool calls, Validator runs tests and checks acceptance criteria. Includes the orchestration state machine, LLM client integration, and agent panel UI tabs.",
+  "created": "2026-03-03",
+  "notes": [
+    "Strict JSON envelopes only: tool_call, question, final.",
+    "Non-compliant LLM output is rejected with schema error + retry (max 3).",
+    "Plans are execution contracts stored as .tide/features/<slug>.json.",
+    "Workflow: Scout → Planner → Builder → Validator.",
+    "Plan-before-build: Builder won't modify code without a plan unless user explicitly overrides.",
+    "Test discovery scans repo, user confirms, commands written to TIDE.md.",
+    "M4 uses a single hardcoded LLM provider; multi-provider routing comes in M5."
+  ],
+
+  "tasks": [
+    {
+      "id": "TIDE-051",
+      "title": "Define feature plan schema",
+      "description": "Create packages/shared/src/types/feature-plan.ts: Zod schemas for FeaturePlan (id, name, slug, description, status [draft/approved/in_progress/done/abandoned], createdAt, updatedAt, version, scout output, phases array, acceptanceCriteria, testCommand, targetBranch). Phase schema (id like 'P1', title, tasks array). Task schema (id like 'P1.T1', title, description, status [pending/in_progress/done/blocked/skipped], dependsOn array, acceptanceCriteria array, toolHints, filesLikelyTouched, scoutNotes, builderLog, validatorResult). AcceptanceCriterion schema (id, description, type [test_passes/file_exists/pattern_match/manual_check/no_regressions], config, status [pending/passed/failed]).",
+      "files": [
+        "packages/shared/src/types/feature-plan.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-052",
+      "title": "Build PlanStore for .tide/features/ persistence",
+      "description": "Create apps/engine/src/plans/plan-store.ts: PlanStore class with methods: save(plan) writes to .tide/features/<slug>.json with JSON.stringify(plan, null, 2), load(slug) reads and validates against FeaturePlanSchema, list() reads all .json files in the directory, getActive() returns plan with status='in_progress'. Ensures .tide/features/ directory exists on init. Increments version on each save.",
+      "files": [
+        "apps/engine/src/plans/plan-store.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-053",
+      "title": "Implement strict JSON envelope parser",
+      "description": "Create apps/engine/src/orchestration/envelope-parser.ts: EnvelopeParser class. parse(rawContent: string) attempts to parse as JSON and validate against the three envelope types: { type: 'tool_call', tool, arguments }, { type: 'question', message, choices }, { type: 'final', message }. Returns { ok: true, envelope } or { ok: false, error: string }. Error message includes the specific Zod validation failures. Used to validate every LLM response turn.",
+      "files": [
+        "apps/engine/src/orchestration/envelope-parser.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-054",
+      "title": "Create initial LLM client",
+      "description": "Create apps/engine/src/orchestration/llm-client.ts: LLMClient class that takes a CompletionRequest and streams response to produce accumulated content. For M4, hardcode to a single provider (e.g., OpenAI or Anthropic — configurable via env var/TIDE.md). Sends system prompt + messages, enables JSON mode, handles streaming response, returns accumulated content. Supports AbortSignal for cancellation. In M5, this gets replaced by the full provider adapter system.",
+      "files": [
+        "apps/engine/src/orchestration/llm-client.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-055",
+      "title": "Define role configs and system prompts",
+      "description": "Create apps/engine/src/orchestration/roles.ts: AgentRole type ('scout'|'planner'|'builder'|'validator'), RoleConfig interface (role, systemPrompt, allowedTools[], contextBudgetRatio, maxSteps, temperature). Define ROLE_CONFIGS with tool subsets per role: scout (read-only), planner (read-only), builder (all tools), validator (read + run_command). Create apps/engine/src/orchestration/prompts/ directory with scout.ts, planner.ts, builder.ts, validator.ts — each exporting a system prompt string that enforces strict JSON envelope format, lists available tools, and defines the role's behavior.",
+      "files": [
+        "apps/engine/src/orchestration/roles.ts",
+        "apps/engine/src/orchestration/prompts/scout.ts",
+        "apps/engine/src/orchestration/prompts/planner.ts",
+        "apps/engine/src/orchestration/prompts/builder.ts",
+        "apps/engine/src/orchestration/prompts/validator.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-056",
+      "title": "Build workflow state machine",
+      "description": "Create apps/engine/src/orchestration/workflow.ts: WorkflowStateMachine class. States: idle, scouting, planning, awaiting_approval, building, validating, completed, failed. Events: START_FEATURE, SCOUT_COMPLETE, PLAN_CREATED, PLAN_APPROVED, TASK_COMPLETE, TASK_FAILED, VALIDATION_PASSED, VALIDATION_FAILED, ALL_TASKS_DONE, CANCEL, USER_OVERRIDE. Transition function (reduce) enforces valid state transitions. Listeners notified on state change. CANCEL from any state returns to idle.",
+      "files": [
+        "apps/engine/src/orchestration/workflow.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-057",
+      "title": "Build Orchestrator (main coordination class)",
+      "description": "Create apps/engine/src/orchestration/orchestrator.ts: Orchestrator class. Dependencies: WorkflowStateMachine, LLMClient, ToolExecutor, ContextBuilder, PlanStore, ToolLogger. Methods: startFeature(description) runs Scout phase → Planner phase → saves plan → awaits user approval; executeApprovedPlan(planId) iterates tasks respecting dependencies, for each task runs Builder then Validator. runAgent(role, params) is the core agentic loop: build ContextPack → construct messages → stream LLM → parse envelope → if tool_call: execute tool + feed result back → repeat until 'final' envelope or maxSteps reached. Enforces plan-before-build rule.",
+      "files": [
+        "apps/engine/src/orchestration/orchestrator.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-058",
+      "title": "Build ChatTab UI component",
+      "description": "Create apps/desktop/src/components/AgentPanel/ChatTab.tsx: user input field (textarea with Cmd+Enter to send), streaming output display for agent responses. Shows tool_call envelopes as collapsible cards with tool name and arguments. Shows question envelopes as interactive choice prompts. Shows final envelopes as completion messages. Integrates with stream store for real-time updates.",
+      "files": [
+        "apps/desktop/src/components/AgentPanel/ChatTab.tsx",
+        "apps/desktop/src/components/AgentPanel/ChatTab.module.css"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-059",
+      "title": "Build PlanTab UI component",
+      "description": "Create apps/desktop/src/components/AgentPanel/PlanTab.tsx: displays active feature plan as a structured tree. Shows phases with tasks nested underneath. Each task shows: id, title, status badge (pending=gray, in_progress=blue, done=green, blocked=red, skipped=gray strikethrough), acceptance criteria as checkboxes. Dependencies shown as links. 'Approve Plan' button visible when plan status is 'draft'. Plan editing: user can click task to expand full description.",
+      "files": [
+        "apps/desktop/src/components/AgentPanel/PlanTab.tsx",
+        "apps/desktop/src/components/AgentPanel/PlanTab.module.css"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-060",
+      "title": "Build ExecuteTab UI component",
+      "description": "Create apps/desktop/src/components/AgentPanel/ExecuteTab.tsx: live execution view. Shows: current task title and description, real-time tool calls being made (tool name, arguments, status spinner), approval requests pending, step counter (step N of maxSteps). Progress indicator for overall plan execution (tasks completed / total). Cancel button to abort current execution.",
+      "files": [
+        "apps/desktop/src/components/AgentPanel/ExecuteTab.tsx",
+        "apps/desktop/src/components/AgentPanel/ExecuteTab.module.css"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-061",
+      "title": "Build ValidateTab UI component",
+      "description": "Create apps/desktop/src/components/AgentPanel/ValidateTab.tsx: shows validation results per task. Test output display (stdout/stderr), acceptance criteria with pass/fail/pending status icons. 'Done' button only enabled when ALL criteria for the current task pass. Summary: X of Y criteria passed. For failed criteria: shows details and suggested fixes.",
+      "files": [
+        "apps/desktop/src/components/AgentPanel/ValidateTab.tsx",
+        "apps/desktop/src/components/AgentPanel/ValidateTab.module.css"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-062",
+      "title": "Implement test discovery",
+      "description": "Create apps/engine/src/testing/discovery.ts: scanForTestCommands(workspaceRoot) function that: checks package.json for test/test:unit/test:e2e scripts, looks for common test frameworks (jest, vitest, pytest, cargo test), scans for test directories. Returns suggested test commands with confidence level. Results sent to UI for user confirmation. Confirmed commands written to TIDE.md test_commands section. From then on, TIDE.md is source of truth.",
+      "files": [
+        "apps/engine/src/testing/discovery.ts"
+      ],
+      "status": "pending",
+      "priority": "medium"
+    },
+    {
+      "id": "TIDE-063",
+      "title": "Wire orchestration into IPC and agent panel",
+      "description": "Add IPC messages: orchestration.start_feature, orchestration.approve_plan, orchestration.cancel, orchestration.status. Wire Orchestrator into engine main.ts. Connect agent panel tabs to orchestration state via IPC events (state changes, tool calls, stream deltas, approval requests). Create apps/desktop/src/stores/orchestrationStore.ts: Zustand store tracking workflow state, active plan, current task, and actions.",
+      "files": [
+        "apps/engine/src/ipc/handler.ts",
+        "apps/desktop/src/stores/orchestrationStore.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-064",
+      "title": "End-to-end test of agentic workflow",
+      "description": "Test the complete workflow: describe a feature in ChatTab → Scout explores repo → Planner generates plan visible in PlanTab → user approves → Builder executes tasks with tool calls visible in ExecuteTab → approval dialogs appear for write operations → Validator checks results in ValidateTab. Verify: plan saved to .tide/features/, tool logs recorded, cancellation works, envelope parsing rejects bad output and retries.",
+      "files": [],
+      "status": "pending",
+      "priority": "high"
+    }
+  ]
+}

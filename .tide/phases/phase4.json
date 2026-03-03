@@ -1,0 +1,212 @@
+{
+  "project": "Tide IDE — Agentic Coding Environment",
+  "phase": 4,
+  "name": "M3: Strict Tools + Patching + Approvals",
+  "description": "Build the tool registry with Zod schemas, implement all v0.1 tools including apply_patch with diff preview, create the approval system for write/command operations, add tool logging, and implement cancellation.",
+  "created": "2026-03-03",
+  "notes": [
+    "Safety levels: read (never approval), write (always by default), command (disabled by default).",
+    "apply_patch uses unified diff format and atomic writes (temp file + rename).",
+    "run_command is direct exec only (execFile, NOT exec with shell).",
+    "Cancellation: Option B — cancel stream + cancel active tool, no rollback.",
+    "Tool logs stored in SQLite tool_logs table.",
+    "TIDE.md is created at workspace root with safety config defaults.",
+    "All tool arguments validated against Zod schemas before execution."
+  ],
+
+  "tasks": [
+    {
+      "id": "TIDE-033",
+      "title": "Create ToolDefinition types and ToolRegistry",
+      "description": "Create packages/shared/src/types/tool.ts: ToolDefinition interface with name, description, safetyLevel ('read'|'write'|'command'), argsSchema (ZodSchema), resultSchema (ZodSchema), requiresApproval(config) function, cancellable boolean, defaultTimeoutMs. Create apps/engine/src/tools/registry.ts: ToolRegistry class with register(), get(), validateArgs(), listTools(), generateToolDescriptions() (for LLM system prompts — renders tool name, description, JSON schema from Zod). Install zod-to-json-schema for schema conversion.",
+      "files": [
+        "packages/shared/src/types/tool.ts",
+        "apps/engine/src/tools/registry.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-034",
+      "title": "Create ToolExecutor with validation and safety pipeline",
+      "description": "Create apps/engine/src/tools/executor.ts: ToolExecutor class. execute(toolName, args, requestId, cancellationToken) method enforces the full pipeline: 1) get tool from registry, 2) validate args via Zod schema, 3) check if approval needed (based on safety level + SafetyConfig), 4) if needed, call ApprovalGate.requestApproval and await response, 5) log tool start, 6) execute with timeout (withTimeout helper), 7) log result/error, 8) return ToolResult. Handle cancellation via CancellationToken.",
+      "files": [
+        "apps/engine/src/tools/executor.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-035",
+      "title": "Implement read-only tools: fs_list, fs_read, fs_stat",
+      "description": "Refactor existing fs_list and fs_read from Phase 2 into ToolDefinition format under apps/engine/src/tools/definitions/. Each file exports a ToolDefinition object and an execute function. Add fs_stat.ts: returns file metadata (size, modified, created, type). All three: safetyLevel='read', requiresApproval always false, cancellable false. Register in apps/engine/src/tools/definitions/index.ts via registerAllTools().",
+      "files": [
+        "apps/engine/src/tools/definitions/fs_list.ts",
+        "apps/engine/src/tools/definitions/fs_read.ts",
+        "apps/engine/src/tools/definitions/fs_stat.ts",
+        "apps/engine/src/tools/definitions/index.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-036",
+      "title": "Implement ripgrep tool",
+      "description": "Create apps/engine/src/tools/definitions/ripgrep.ts: wraps rg binary via child_process.execFile. Args: pattern (regex string), path (search root), flags (optional: case insensitive, file type filter, max results). Parses rg JSON output (--json flag) into structured results with file path, line number, match text, context lines. safetyLevel='read'. Handles rg not found error gracefully.",
+      "files": [
+        "apps/engine/src/tools/definitions/ripgrep.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-037",
+      "title": "Implement git tools: git_status, git_diff, git_log",
+      "description": "Create three files under apps/engine/src/tools/definitions/: git_status.ts (spawns 'git status --porcelain', parses into structured entries), git_diff.ts (spawns 'git diff' with optional --staged and path args, returns diff string), git_log.ts (spawns 'git log --oneline' with optional limit, returns structured entries with hash and message). All safetyLevel='read'. Validate that cwd is within workspace root.",
+      "files": [
+        "apps/engine/src/tools/definitions/git_status.ts",
+        "apps/engine/src/tools/definitions/git_diff.ts",
+        "apps/engine/src/tools/definitions/git_log.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-038",
+      "title": "Implement fs_write tool",
+      "description": "Create apps/engine/src/tools/definitions/fs_write.ts: writes entire file content. Args: path (workspace-relative), content (string). Creates parent directories if needed. safetyLevel='write' (approval-gated by default). Atomic write: writes to temp file, then renames. Returns { written: true, bytesWritten }.",
+      "files": [
+        "apps/engine/src/tools/definitions/fs_write.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-039",
+      "title": "Implement unified diff patch parser",
+      "description": "Create apps/engine/src/tools/patch/patch-parser.ts: parseUnifiedDiff(patch: string) function that parses unified diff format into structured DiffHunk[] objects. Each hunk has oldStart, oldCount, newStart, newCount, and lines array with type ('context'|'add'|'remove') and content. Handle edge cases: no-newline-at-end-of-file, multiple hunks, file creation patches.",
+      "files": [
+        "apps/engine/src/tools/patch/patch-parser.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-040",
+      "title": "Implement patch applier",
+      "description": "Create apps/engine/src/tools/patch/patch-applier.ts: applyPatch(original: string, hunks: DiffHunk[]) function that applies parsed hunks to file content sequentially, adjusting line offsets. Returns { result: string, linesAdded: number, linesRemoved: number }. Handle hunk application failures (context mismatch) with clear error messages.",
+      "files": [
+        "apps/engine/src/tools/patch/patch-applier.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-041",
+      "title": "Implement apply_patch tool",
+      "description": "Create apps/engine/src/tools/definitions/apply_patch.ts: ToolDefinition with args { path, patch }. Implementation: read current file, parse patch, apply hunks, write atomically. safetyLevel='write'. For approval flow: compute 'would-be' result without writing, send original + modified content to UI via approval request so diff preview can be shown. Returns { applied, linesAdded, linesRemoved }.",
+      "files": [
+        "apps/engine/src/tools/definitions/apply_patch.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-042",
+      "title": "Implement run_command tool",
+      "description": "Create apps/engine/src/tools/definitions/run_command.ts: direct exec only using child_process.execFile (NOT exec or spawn with shell:true). Args: cmd (program name), args (string[]), cwd (workspace-relative), timeout_ms (default 30000, max 300000), env_whitelist (optional). safetyLevel='command'. Disabled by default. Command must be in TIDE.md allowlist. Captures stdout/stderr. Process killed on cancellation (SIGTERM, then SIGKILL after 3s).",
+      "files": [
+        "apps/engine/src/tools/definitions/run_command.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-043",
+      "title": "Create SafetyConfig and TIDE.md loader",
+      "description": "Create apps/engine/src/safety/safety-config.ts: SafetyConfig type with approvalPolicy (read: 'never', write: 'always'|'ask'|'never', command: 'disabled'|'always'|'allowlist'), commandAllowlist string[], gitWriteEnabled boolean. Create apps/engine/src/safety/tide-md-loader.ts: parses TIDE.md from workspace root, extracts safety config, test commands, command allowlist. Creates default TIDE.md if not present.",
+      "files": [
+        "apps/engine/src/safety/safety-config.ts",
+        "apps/engine/src/safety/tide-md-loader.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-044",
+      "title": "Build ApprovalGate engine component",
+      "description": "Create apps/engine/src/safety/approval-gate.ts: ApprovalGate class. requestApproval(params) creates ApprovalRequest (id, toolName, args, safetyLevel, timestamp), sends to UI via IPC 'approval.request', returns Promise<boolean> that resolves when UI responds. Pending map stores resolve callbacks. handleResponse(response) resolves the pending promise. Auto-deny after 5 minutes timeout. For apply_patch: include both original and modified content in the request for diff preview.",
+      "files": [
+        "apps/engine/src/safety/approval-gate.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-045",
+      "title": "Build ApprovalDialog UI component",
+      "description": "Create apps/desktop/src/components/Approval/ApprovalDialog.tsx: modal dialog for tool approval. Shows: tool name, safety level badge (yellow for write, red for command), formatted arguments view. For apply_patch: renders DiffPreview (next task) instead of raw args. Approve (green) and Deny (red) buttons. Optional 'Always approve this tool' checkbox. Keyboard: Enter=approve, Escape=deny. Create apps/desktop/src/stores/approvalStore.ts: Zustand store with pendingApprovals queue, addApproval, respondToApproval actions.",
+      "files": [
+        "apps/desktop/src/components/Approval/ApprovalDialog.tsx",
+        "apps/desktop/src/components/Approval/ApprovalDialog.module.css",
+        "apps/desktop/src/stores/approvalStore.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-046",
+      "title": "Build DiffPreview component using Monaco diff editor",
+      "description": "Create apps/desktop/src/components/DiffPreview/DiffPreview.tsx: renders side-by-side diff using Monaco's createDiffEditor. Props: filePath, originalContent, modifiedContent. Shows file path header, diff editor filling available space, line counts (additions/deletions) summary. Integrated into ApprovalDialog when tool is apply_patch.",
+      "files": [
+        "apps/desktop/src/components/DiffPreview/DiffPreview.tsx",
+        "apps/desktop/src/components/DiffPreview/DiffPreview.module.css"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-047",
+      "title": "Implement CancellationToken",
+      "description": "Create apps/engine/src/orchestration/cancellation.ts: CancellationToken class with cancel(), onCancel(fn), isCancelled getter. Listeners are called immediately if already cancelled. One token per LLM request. On cancel: token signals all listeners. Used by ToolExecutor to abort running tools and by stream handlers to stop LLM streaming. Add cancel IPC message type and wire into engine handler + UI cancel button.",
+      "files": [
+        "apps/engine/src/orchestration/cancellation.ts"
+      ],
+      "status": "pending",
+      "priority": "medium"
+    },
+    {
+      "id": "TIDE-048",
+      "title": "Build tool logging and audit trail",
+      "description": "Create apps/engine/src/logging/tool-logger.ts: ToolLogger class with SQLite storage. Table tool_logs: id, request_id, session_id, tool_name, args_json, safety_level, approval_required, approval_result, started_at, completed_at, duration_ms, status (running/success/error/cancelled), result_json, error. Methods: logStart, logEnd, logError, logCancelled, getLogsBySession, getLogsByRequest, getRecentLogs. Indexed on session_id and request_id.",
+      "files": [
+        "apps/engine/src/logging/tool-logger.ts"
+      ],
+      "status": "pending",
+      "priority": "medium"
+    },
+    {
+      "id": "TIDE-049",
+      "title": "Build LogsTab UI in agent panel",
+      "description": "Create apps/desktop/src/components/AgentPanel/LogsTab.tsx: chronological list of tool invocations. Each entry: tool icon, name, duration, status badge (green=success, red=error, yellow=running, gray=cancelled). Expandable details: arguments, result, error message. For apply_patch entries: inline diff viewer. Filter controls: by tool name, status, safety level. Create apps/desktop/src/stores/logStore.ts: Zustand store with logs, filter state, fetchLogs action.",
+      "files": [
+        "apps/desktop/src/components/AgentPanel/LogsTab.tsx",
+        "apps/desktop/src/components/AgentPanel/LogsTab.module.css",
+        "apps/desktop/src/stores/logStore.ts"
+      ],
+      "status": "pending",
+      "priority": "medium"
+    },
+    {
+      "id": "TIDE-050",
+      "title": "Wire tool registry into IPC and verify end-to-end",
+      "description": "Update engine IPC handler to use ToolExecutor for all tool_request messages. Register all tools via registerAllTools(). Update Tauri commands to proxy tool requests through the engine. Test: invoke each tool type through IPC, verify Zod validation rejects bad args, approval dialog appears for write tools, diff preview shows for apply_patch, logs tab shows audit trail, cancel button stops running commands.",
+      "files": [
+        "apps/engine/src/ipc/handler.ts",
+        "apps/engine/src/main.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    }
+  ]
+}

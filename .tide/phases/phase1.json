@@ -1,0 +1,145 @@
+{
+  "project": "Tide IDE — Agentic Coding Environment",
+  "phase": 1,
+  "name": "M0: Skeleton",
+  "description": "Establish the foundational architecture: Tauri window, Node.js sidecar with UDS IPC, streaming protocol demo, and basic app shell UI.",
+  "created": "2026-03-03",
+  "notes": [
+    "Package manager: pnpm with workspaces.",
+    "Monorepo: apps/desktop (Tauri+React), apps/engine (Node sidecar), packages/shared.",
+    "IPC: Unix Domain Socket with 4-byte big-endian length-prefixed framing.",
+    "Streaming: start/delta/end pattern forwarded via Tauri Channel API.",
+    "Sidecar: Rust spawns Node directly (not Tauri shell plugin sidecar feature). Dev mode uses tsx/tsup.",
+    "No component library — CSS modules + custom properties for dark theme.",
+    "Engine is UDS server (listens), Rust is client (connects).",
+    "< 1000 LOC per file hard rule."
+  ],
+
+  "tasks": [
+    {
+      "id": "TIDE-001",
+      "title": "Create monorepo root scaffold",
+      "description": "Create root package.json (name: tide-ide, private: true, scripts for dev/build/tauri), pnpm-workspace.yaml (packages: apps/*, packages/*), tsconfig.base.json (ES2022, ESNext modules, bundler resolution, strict), and .gitignore (node_modules, dist, target, *.sock, .DS_Store). Create empty directory structure: apps/desktop/, apps/engine/, packages/shared/.",
+      "files": [
+        "package.json",
+        "pnpm-workspace.yaml",
+        "tsconfig.base.json",
+        ".gitignore"
+      ],
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-002",
+      "title": "Initialize Tauri + React desktop app",
+      "description": "Scaffold apps/desktop/ with Vite + React + TypeScript. Create package.json (@tide/desktop), vite.config.ts (port 5173, strictPort, esnext target), index.html, src/main.tsx, src/App.tsx (minimal 'Tide' placeholder). Initialize Tauri v2 in src-tauri/: Cargo.toml with dependencies (tauri 2, serde, serde_json, tokio full, tokio-util codec, bytes, tracing, tracing-subscriber, uuid v4), tauri.conf.json (productName: Tide, 1400x900 window, dev URL localhost:5173), capabilities/default.json, build.rs, src/main.rs, src/lib.rs. Install React deps: react, react-dom, @tauri-apps/api, zustand, zod. Dev deps: @tauri-apps/cli, vite, @vitejs/plugin-react, typescript, @types/react, @types/react-dom.",
+      "files": [
+        "apps/desktop/package.json",
+        "apps/desktop/vite.config.ts",
+        "apps/desktop/tsconfig.json",
+        "apps/desktop/index.html",
+        "apps/desktop/src/main.tsx",
+        "apps/desktop/src/App.tsx",
+        "apps/desktop/src-tauri/Cargo.toml",
+        "apps/desktop/src-tauri/tauri.conf.json",
+        "apps/desktop/src-tauri/capabilities/default.json",
+        "apps/desktop/src-tauri/build.rs",
+        "apps/desktop/src-tauri/src/main.rs",
+        "apps/desktop/src-tauri/src/lib.rs"
+      ],
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-003",
+      "title": "Initialize Node.js engine sidecar",
+      "description": "Create apps/engine/ with package.json (@tide/engine, type: module), tsconfig.json (extends base, node types), tsup.config.ts (entry: src/main.ts, format: esm, target: node20, single file output to dist/main.js). Create src/main.ts entry point that parses --socket CLI arg, creates a net.createServer UDS server, listens on the socket path. Install deps: zod. Dev deps: tsup, typescript, @types/node.",
+      "files": [
+        "apps/engine/package.json",
+        "apps/engine/tsconfig.json",
+        "apps/engine/tsup.config.ts",
+        "apps/engine/src/main.ts"
+      ],
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-004",
+      "title": "Create shared types package",
+      "description": "Create packages/shared/ with package.json (@tide/shared), tsconfig.json. Create src/protocol.ts with Zod schemas for all IPC message types: MessageEnvelope (id, type, timestamp), HandshakeRequest, HandshakeAck (with engineId), ToolRequest (requestId, tool, arguments), ToolResponse (requestId, result, error?), StreamStart (requestId, streamId), StreamDelta (streamId, seq, content), StreamEnd (streamId, finalSeq). Export discriminated union IpcMessage. Also create src/stream.ts for stream event type exports.",
+      "files": [
+        "packages/shared/package.json",
+        "packages/shared/tsconfig.json",
+        "packages/shared/src/protocol.ts",
+        "packages/shared/src/stream.ts"
+      ],
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-005",
+      "title": "Implement engine-side IPC transport",
+      "description": "Create apps/engine/src/ipc/transport.ts: Transport class wrapping net.Socket. Implements length-prefixed framing (4-byte big-endian u32 header + UTF-8 JSON payload). Methods: send(msg: unknown) serializes to JSON and writes with length header; onMessage(handler) registers callback; onClose(handler) for disconnect. Internal buffer accumulates data chunks and drains complete frames. Create apps/engine/src/ipc/handler.ts: handleMessage function that dispatches incoming messages by type (handshake, tool_request, etc.).",
+      "files": [
+        "apps/engine/src/ipc/transport.ts",
+        "apps/engine/src/ipc/handler.ts"
+      ],
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-006",
+      "title": "Implement Rust-side IPC and sidecar lifecycle",
+      "description": "Create apps/desktop/src-tauri/src/ipc.rs: EngineConnection struct with send/recv over tokio UnixStream. Split stream into read/write halves. Read half runs in tokio::spawn loop dispatching messages via mpsc channel. Create apps/desktop/src-tauri/src/sidecar.rs: start_engine() function that determines socket path (/tmp/tide-engine-{pid}.sock), cleans stale socket, resolves engine entry point (TIDE_ENGINE_PATH env var or relative path to apps/engine/dist/main.js), spawns Node process with kill_on_drop(true), polls for socket file with backoff (max 5s), connects via UnixStream, performs handshake. Store EngineConnection in AppState managed by Tauri.",
+      "files": [
+        "apps/desktop/src-tauri/src/ipc.rs",
+        "apps/desktop/src-tauri/src/sidecar.rs"
+      ],
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-007",
+      "title": "Implement streaming protocol",
+      "description": "Engine side: Create apps/engine/src/stream/manager.ts with StreamManager class. simulateStream(requestId) method sends stream_start, then N stream_delta messages (simulated token-by-token with delays), then stream_end. Each delta has incrementing seq number. Rust side: Create apps/desktop/src-tauri/src/stream.rs with StreamEvent enum (Start, Delta, End) and forward_to_ui() function that receives messages from engine UDS read loop and sends through Tauri Channel<StreamEvent> to the UI. UI side: Create apps/desktop/src/lib/ipc.ts with sendMessage() that invokes Tauri command with Channel callback. Create apps/desktop/src/stores/stream.ts Zustand store with startStream, appendDelta, endStream actions and accumulated content.",
+      "files": [
+        "apps/engine/src/stream/manager.ts",
+        "apps/desktop/src-tauri/src/stream.rs",
+        "apps/desktop/src/lib/ipc.ts",
+        "apps/desktop/src/stores/stream.ts"
+      ],
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-008",
+      "title": "Wire Tauri commands for streaming and connect lib.rs",
+      "description": "In apps/desktop/src-tauri/src/lib.rs: register modules (sidecar, ipc, stream), create AppState struct with Arc<Mutex<Option<EngineConnection>>>, set up Tauri builder with .setup() that spawns sidecar, .manage(AppState), and .invoke_handler with send_message command. The send_message command takes a message string and Channel<StreamEvent>, forwards to engine, and relays stream events back. Add a commands module with the Tauri command implementations.",
+      "files": [
+        "apps/desktop/src-tauri/src/lib.rs"
+      ],
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-009",
+      "title": "Create basic app shell UI with dark theme",
+      "description": "Create apps/desktop/src/styles/global.css: CSS reset, dark theme variables (--bg-primary: #1e1e1e, --bg-secondary: #252526, --bg-tertiary: #2d2d2d, --text-primary: #cccccc, --text-secondary: #858585, --accent: #007acc, --border: #3c3c3c), font stacks (mono: Cascadia Code/Fira Code/JetBrains Mono, ui: system fonts). Create apps/desktop/src/stores/engine.ts: Zustand store with status (disconnected/connecting/connected/error) and errorMessage. Update App.tsx: minimal layout with top status bar showing engine connection status, center content area with text input + send button + streaming output display, bottom status bar. Use requestAnimationFrame for coalescing stream renders at ~30-60fps.",
+      "files": [
+        "apps/desktop/src/styles/global.css",
+        "apps/desktop/src/stores/engine.ts",
+        "apps/desktop/src/App.tsx"
+      ],
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-010",
+      "title": "Install all dependencies and verify end-to-end",
+      "description": "Run pnpm install at root. Build engine with tsup (pnpm --filter @tide/engine build). Verify pnpm tauri dev launches Tauri window, spawns engine sidecar, console shows '[engine] Listening on /tmp/tide-engine-*.sock' and 'Rust shell connected'. Test: type message, click Send, see simulated streaming output appear in UI with smooth rendering. Fix any IPC issues, handshake failures, or build problems.",
+      "files": [],
+      "status": "completed",
+      "priority": "high"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "tide-ide",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --filter @tide/desktop dev",
+    "build": "pnpm --filter @tide/shared build && pnpm --filter @tide/engine build && pnpm --filter @tide/desktop build",
+    "build:engine": "pnpm --filter @tide/engine build",
+    "build:shared": "pnpm --filter @tide/shared build",
+    "tauri": "pnpm --filter @tide/desktop tauri",
+    "tauri:dev": "pnpm --filter @tide/desktop tauri dev"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

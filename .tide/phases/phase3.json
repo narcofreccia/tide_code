@@ -1,0 +1,149 @@
+{
+  "project": "Tide IDE — Agentic Coding Environment",
+  "phase": 3,
+  "name": "M2: Region Tagging + Context Dial",
+  "description": "Tag code ranges in the editor, attach them to agent context, persist tags in SQLite. Build the context management engine with budget tracking and the Context Status Dial + Context Inspector UI.",
+  "created": "2026-03-03",
+  "notes": [
+    "Region tags use line/column ranges (survive minor edits better than character offsets).",
+    "contentHash (SHA-256 of tagged content) enables staleness detection.",
+    "Pinned tags are never trimmed by context budget policy.",
+    "Token estimation: chars/3.5 for text, chars/3.0 for code (v0.1 approximation).",
+    "Context budget thresholds: green <70%, yellow 70-90%, red >90%.",
+    "SQLite database lives at .tide/tide.db."
+  ],
+
+  "tasks": [
+    {
+      "id": "TIDE-021",
+      "title": "Initialize SQLite persistence layer",
+      "description": "Create apps/engine/src/persistence/sqlite.ts: initialize SQLite database at .tide/tide.db using better-sqlite3 (or sql.js for bundling simplicity). Create database initialization function that creates tables if not exist. Install better-sqlite3 dependency. Set up WAL mode for better concurrent reads.",
+      "files": [
+        "apps/engine/src/persistence/sqlite.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-022",
+      "title": "Create region tag data model and persistence",
+      "description": "Create packages/shared/src/types/region-tag.ts: Zod schema for RegionTag (id: UUID, filePath, startLine, startColumn, endLine, endColumn, label, note?, pinned: boolean, contentHash: string, createdAt, updatedAt). Create apps/engine/src/persistence/region-tags.ts: CRUD operations on region_tags SQLite table — createTag, updateTag, deleteTag, listTags(filePath?), getTagsByIds. SQL: CREATE TABLE region_tags with indexed file_path column.",
+      "files": [
+        "packages/shared/src/types/region-tag.ts",
+        "apps/engine/src/persistence/region-tags.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-023",
+      "title": "Add region tag IPC messages",
+      "description": "Extend packages/shared/src/protocol.ts with region tag request/response message types: region_tags.list, region_tags.create, region_tags.update, region_tags.delete with corresponding response types. Wire into engine IPC handler to route these messages to the region-tags persistence layer.",
+      "files": [
+        "packages/shared/src/protocol.ts",
+        "apps/engine/src/ipc/handler.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-024",
+      "title": "Build editor region tagging hook",
+      "description": "Create apps/desktop/src/components/Editor/useRegionTags.ts: React hook managing Monaco decorations for region tags. On selection + Cmd+Shift+T: compute contentHash of selected text, open tag popover. On tag creation: call engine IPC region_tags.create, add Monaco decoration (colored range highlight, glyph margin marker, hover tooltip with label). Pinned tags: blue border; unpinned: subtle gray. Load tags for current file on file open.",
+      "files": [
+        "apps/desktop/src/components/Editor/useRegionTags.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-025",
+      "title": "Build RegionTagPopover component",
+      "description": "Create apps/desktop/src/components/Editor/RegionTagPopover.tsx: inline popover positioned at selection end. Contains: text input for label (auto-focused), optional note textarea, 'Pin to context' checkbox, Create/Cancel buttons. On Create: generates UUID, computes contentHash, calls engine IPC. Keyboard: Enter to create, Escape to cancel.",
+      "files": [
+        "apps/desktop/src/components/Editor/RegionTagPopover.tsx",
+        "apps/desktop/src/components/Editor/RegionTagPopover.module.css"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-026",
+      "title": "Create regionTag Zustand store with staleness detection",
+      "description": "Create apps/desktop/src/stores/regionTagStore.ts: Zustand store with tags Map<id, RegionTag>, tagsByFile Map<filePath, Set<id>>, staleTags Set<id>. Actions: loadTagsForFile, loadAllTags, createTag, deleteTag, togglePin, updateStaleness. Staleness detection: on file content change (debounced 1s), recompute hash for that file's tagged ranges, mark as stale if mismatch.",
+      "files": [
+        "apps/desktop/src/stores/regionTagStore.ts"
+      ],
+      "status": "pending",
+      "priority": "medium"
+    },
+    {
+      "id": "TIDE-027",
+      "title": "Build ContextPack type and context builder engine",
+      "description": "Create apps/engine/src/context/context-pack.ts: ContextItem Zod schema (id, type enum [tide_rules, project_spec, feature_plan, region_tag, file_snippet, repo_map, session_summary, user_attachment], source, content, tokenEstimate, pinned, priority, trimmable). ContextPack schema (items[], totalTokens, budgetTokens, usagePercent, trimmedItems[]). Create apps/engine/src/context/context-builder.ts: ContextBuilder class that assembles items in priority order per spec 8.2 — TIDE.md rules (never trimmable) > active plan > user attachments > pinned tags > PROJECT.md > repo map > session summary. Trimming order: old chat > repo map verbosity > non-pinned attachments.",
+      "files": [
+        "apps/engine/src/context/context-pack.ts",
+        "apps/engine/src/context/context-builder.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-028",
+      "title": "Implement token estimator and budget tracker",
+      "description": "Create apps/engine/src/context/token-estimator.ts: estimateTokens(text, type: 'code'|'text') using character-based heuristic (chars/3.0 for code, chars/3.5 for text). Create apps/engine/src/context/budget-tracker.ts: BudgetTracker class that maintains running totals, computes usage percentage, determines threshold color (green <70%, yellow 70-90%, red >90%), generates category breakdown for the dial hover (tideRules, activePlan, attachments, taggedRegions, repoMap, sessionSummary). Add context config (modelContextWindow, contextRatio, thresholds).",
+      "files": [
+        "apps/engine/src/context/token-estimator.ts",
+        "apps/engine/src/context/budget-tracker.ts",
+        "apps/engine/src/context/context-config.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-029",
+      "title": "Build region resolver for context packs",
+      "description": "Create apps/engine/src/context/region-resolver.ts: resolveRegions(tagIds) function that loads tags from persistence, reads current file content at tagged ranges, computes staleness (contentHash comparison), estimates tokens per region. Returns ResolvedRegion[] (tag, content, isStale, tokenEstimate). This is used by ContextBuilder when including tagged regions.",
+      "files": [
+        "apps/engine/src/context/region-resolver.ts"
+      ],
+      "status": "pending",
+      "priority": "medium"
+    },
+    {
+      "id": "TIDE-030",
+      "title": "Add context IPC messages and endpoints",
+      "description": "Add context-related IPC messages: context.get_breakdown (returns BudgetBreakdown), context.get_items (returns ContextItem[]), context.toggle_pin (pin/unpin a context item), context.simulate_budget (simulate budget for a role). Wire into engine handler. Create apps/desktop/src/stores/contextStore.ts: Zustand store with breakdown, contextItems, inspectorOpen state and actions (refreshBreakdown, togglePin, openInspector, closeInspector).",
+      "files": [
+        "packages/shared/src/protocol.ts",
+        "apps/engine/src/ipc/handler.ts",
+        "apps/desktop/src/stores/contextStore.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-031",
+      "title": "Build Context Status Dial component",
+      "description": "Create apps/desktop/src/components/StatusBar/ContextDial.tsx: SVG arc/ring gauge in the bottom status bar. Shows % budget used as text in center. Color transitions: green (#22c55e) below 70%, yellow (#eab308) 70-90%, red (#ef4444) above 90%. Hover shows tooltip with breakdown by category. Click opens Context Inspector. Polls engine for breakdown updates (or receives push via IPC events).",
+      "files": [
+        "apps/desktop/src/components/StatusBar/ContextDial.tsx",
+        "apps/desktop/src/components/StatusBar/ContextDialTooltip.tsx",
+        "apps/desktop/src/components/StatusBar/ContextDial.module.css"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-032",
+      "title": "Build Context Inspector panel",
+      "description": "Create apps/desktop/src/components/ContextInspector/ContextInspector.tsx: slide-out panel or tab in the Agent panel area. Scrollable list of context items with: type icon, source path, token estimate, pin/unpin toggle. Trim suggestions section from engine. Role budget simulator: dropdown to select Planner/Builder/Validator, shows estimated budget per role. Search/filter by type. CSS module for styling.",
+      "files": [
+        "apps/desktop/src/components/ContextInspector/ContextInspector.tsx",
+        "apps/desktop/src/components/ContextInspector/ContextInspector.module.css"
+      ],
+      "status": "pending",
+      "priority": "medium"
+    }
+  ]
+}

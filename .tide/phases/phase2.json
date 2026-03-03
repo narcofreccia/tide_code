@@ -1,0 +1,123 @@
+{
+  "project": "Tide IDE — Agentic Coding Environment",
+  "phase": 2,
+  "name": "M1: Workspace + Navigation",
+  "description": "Open folder, file tree browsing, Monaco editor with tabs, and fs_list/fs_read tools working end-to-end through IPC.",
+  "created": "2026-03-03",
+  "notes": [
+    "File tree uses lazy loading — only loads children when directory is expanded.",
+    "Monaco uses VS Dark theme with Tide branding overrides.",
+    "Files open read-only by default; manual editing togglable. Agent edits go through apply_patch (M3).",
+    "Language detection from file extension for Monaco.",
+    "Three-column IDE layout: file tree | editor | agent panel."
+  ],
+
+  "tasks": [
+    {
+      "id": "TIDE-011",
+      "title": "Implement fs_list tool in engine",
+      "description": "Create apps/engine/src/tools/fs_list.ts: async function that takes { path: string, recursive?: boolean, maxDepth?: number } and uses Node fs.readdir with withFileTypes to return entries with { name, type: 'file'|'directory'|'symlink', size? }. Handle errors (ENOENT, EACCES) gracefully. Wire into IPC handler to respond to tool_request messages with tool='fs_list'.",
+      "files": [
+        "apps/engine/src/tools/fs_list.ts",
+        "apps/engine/src/ipc/handler.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-012",
+      "title": "Implement fs_read tool in engine",
+      "description": "Create apps/engine/src/tools/fs_read.ts: async function that takes { path: string, startLine?: number, endLine?: number } and reads file content. Returns { content: string, totalLines: number, language: string }. Language detection from extension (ts->typescript, rs->rust, json->json, etc.). Support line range for large files. Handle binary file detection (return error instead of garbled content). Wire into IPC handler.",
+      "files": [
+        "apps/engine/src/tools/fs_read.ts",
+        "apps/engine/src/ipc/handler.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-013",
+      "title": "Add Tauri commands for workspace operations",
+      "description": "In Rust commands module: add open_folder command that uses tauri::api::dialog to open native folder picker, stores selected path as workspace root in AppState, and triggers initial fs_list via engine IPC. Add fs_list and fs_read proxy commands that forward to engine over UDS and return results. All commands are async and use AppState to access EngineConnection. Update Tauri permissions/capabilities if needed for dialog plugin.",
+      "files": [
+        "apps/desktop/src-tauri/src/lib.rs",
+        "apps/desktop/src-tauri/capabilities/default.json"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-014",
+      "title": "Create workspace Zustand store",
+      "description": "Create apps/desktop/src/stores/workspace.ts: Zustand store with state: rootPath (string|null), fileTree (FsEntry[]), expandedDirs (Set<string>), openTabs (OpenTab[]), activeTabPath (string|null). Actions: setRootPath, setFileTree, toggleDir, openFile, closeTab, setActiveTab. FsEntry type: { name, path, isDir, size?, children? }. OpenTab type: { path, name, content, isDirty, language }.",
+      "files": [
+        "apps/desktop/src/stores/workspace.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-015",
+      "title": "Build FileTree component",
+      "description": "Create apps/desktop/src/components/FileTree/FileTree.tsx: recursive tree component rendering workspace file structure. Features: click directory to expand/collapse (lazy-loads children via fs_list Tauri command), click file to open in editor tab (loads content via fs_read), file/folder icons by type (minimal SVG icon set: folder, folder-open, ts/tsx, rs, json, md, generic-file). Sorted: directories first, then files, alphabetical. CSS module for styling (indentation, hover highlight, selected state). Create FileTree.module.css.",
+      "files": [
+        "apps/desktop/src/components/FileTree/FileTree.tsx",
+        "apps/desktop/src/components/FileTree/FileTree.module.css",
+        "apps/desktop/src/components/FileTree/FileIcon.tsx"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-016",
+      "title": "Integrate Monaco editor",
+      "description": "Install @monaco-editor/react. Create apps/desktop/src/components/Editor/MonacoEditor.tsx: wrapper component that renders Monaco editor for the active tab's content. Props: content, language, path. Configure VS Dark theme with Tide custom overrides. Set up language detection from file extension. Read-only by default with a toggle button in the editor toolbar. Handle large files gracefully.",
+      "files": [
+        "apps/desktop/src/components/Editor/MonacoEditor.tsx"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-017",
+      "title": "Build EditorTabs component",
+      "description": "Create apps/desktop/src/components/Editor/EditorTabs.tsx: horizontal tab bar for open files. Each tab shows: file name, close button (x), dirty indicator dot if modified. Click tab to switch active file. Close button removes tab and selects adjacent tab. Active tab highlighted with accent color border. CSS module for styling. Integrate with workspace store (openTabs, activeTabPath, closeTab, setActiveTab).",
+      "files": [
+        "apps/desktop/src/components/Editor/EditorTabs.tsx",
+        "apps/desktop/src/components/Editor/EditorTabs.module.css"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-018",
+      "title": "Create SplitPane layout component",
+      "description": "Create apps/desktop/src/components/Layout/SplitPane.tsx: resizable split pane using pointer events for drag handles. Supports horizontal and vertical splits. Props: initialSize, minSize, maxSize, direction. Renders a drag handle between children that updates widths/heights on pointermove. Persists sizes in local state. Use for the three-column IDE layout.",
+      "files": [
+        "apps/desktop/src/components/Layout/SplitPane.tsx",
+        "apps/desktop/src/components/Layout/SplitPane.module.css"
+      ],
+      "status": "pending",
+      "priority": "medium"
+    },
+    {
+      "id": "TIDE-019",
+      "title": "Assemble three-column IDE layout",
+      "description": "Update apps/desktop/src/App.tsx to use the three-column IDE layout: Left sidebar (250px, resizable via SplitPane): FileTree component. Center: EditorTabs + MonacoEditor. Right panel (350px, resizable): placeholder Agent Panel with the streaming chat demo from Phase 1. Bottom status bar: engine connection status (from engine store), placeholder for git branch. Add 'Open Folder' button that invokes the Tauri open_folder command when no workspace is open.",
+      "files": [
+        "apps/desktop/src/App.tsx",
+        "apps/desktop/src/components/AgentPanel/AgentPanel.tsx"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-020",
+      "title": "Wire open folder flow end-to-end",
+      "description": "Complete the open folder flow: user clicks 'Open Folder' button -> Tauri native dialog -> path stored in workspace store -> fs_list for root directory populates file tree -> user can browse, expand directories, click files -> fs_read loads content -> Monaco displays file with correct language. Test with various repo structures including the tide_code project itself. Ensure the streaming demo still works in the right panel.",
+      "files": [],
+      "status": "pending",
+      "priority": "high"
+    }
+  ]
+}

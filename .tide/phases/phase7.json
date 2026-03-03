@@ -1,0 +1,200 @@
+{
+  "project": "Tide IDE — Agentic Coding Environment",
+  "phase": 7,
+  "name": "M6: Pi Parity + Extensions",
+  "description": "SkillRegistry with built-in skills, extension system (global + workspace-local with trust gating), CodingBackend interface (native_builder + pi_builder), and command palette integration for 'Run Skill...' workflow.",
+  "created": "2026-03-03",
+  "notes": [
+    "Extensions are engine-only for v0.x — NO UI panels, NO UI components.",
+    "Extensions can: register skills, provide prompt templates, declare permissions.",
+    "Workspace-local extensions disabled by default until user enables (supply chain protection).",
+    "Same extension_id: workspace-local wins over global.",
+    "Version-change on trusted extension requires re-confirmation.",
+    "Skills: TS module handler OR LLM-driven template (both produce Tide tool calls).",
+    "Pi backend outputs must conform to Tide's strict envelopes. Non-compliant = reject + retry.",
+    "Extension sandbox: no process.env, no child_process, no raw fs/network."
+  ],
+
+  "tasks": [
+    {
+      "id": "TIDE-079",
+      "title": "Define skill types and interfaces",
+      "description": "Create apps/engine/src/skills/types.ts: SkillDefinition (id, displayName, description, inputsSchema, outputsSchema, implementation: SkillImplementation, permissions: SkillPermissions, source: SkillSource). SkillImplementation union: { type: 'ts-module', handler: SkillHandler } | { type: 'llm-template', promptTemplate, outputParser }. SkillHandler = (ctx: SkillExecutionContext, inputs) => AsyncIterable<SkillEvent>. SkillExecutionContext: invokeTool (sandboxed), routeCompletion, abortSignal, workspaceRoot. SkillEvent types: progress, tool_call, output, error. SkillPermissions: allowedTools[], commandAllowlist?, networkAccess. SkillSource: builtin | extension with extensionId and location.",
+      "files": [
+        "apps/engine/src/skills/types.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-080",
+      "title": "Build SkillRegistry",
+      "description": "Create apps/engine/src/skills/registry.ts: SkillRegistry class. register(skill) validates id uniqueness (or workspace overrides global), permissions reference valid tools, command allowlists are subsets of TIDE.md allowlist. unregister(skillId). get(skillId). list(filter?). execute(skillId, inputs, abortSignal) returns AsyncIterable<SkillEvent> — creates sandboxed SkillExecutionContext that only exposes allowed tools, enforces command allowlists, routes through approval system, logs all tool invocations.",
+      "files": [
+        "apps/engine/src/skills/registry.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-081",
+      "title": "Build SkillExecutor for both implementation types",
+      "description": "Create apps/engine/src/skills/executor.ts: SkillExecutor class. For ts-module: calls handler directly with sandboxed context. For llm-template: 1) interpolates inputs into promptTemplate, 2) sends to ModelRouter as completion request with jsonMode:true, 3) parses response against outputParser schema, 4) if response contains tool_call envelopes, executes through sandboxed tool context respecting skill permissions, 5) returns parsed output. Both types yield SkillEvent stream.",
+      "files": [
+        "apps/engine/src/skills/executor.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-082",
+      "title": "Create built-in skills",
+      "description": "Create apps/engine/src/skills/builtins/: generate-tests.ts (LLM-template: generates test cases for a plan task), refactor-extract.ts (LLM-template: extract function/method), explain-code.ts (LLM-template: explain selected code region), suggest-plan-tasks.ts (LLM-template: suggest tasks for a feature plan). Each registers itself during engine startup with appropriate permissions. Define prompt templates and output schemas.",
+      "files": [
+        "apps/engine/src/skills/builtins/generate-tests.ts",
+        "apps/engine/src/skills/builtins/refactor-extract.ts",
+        "apps/engine/src/skills/builtins/explain-code.ts",
+        "apps/engine/src/skills/builtins/suggest-plan-tasks.ts",
+        "apps/engine/src/skills/builtins/index.ts"
+      ],
+      "status": "pending",
+      "priority": "medium"
+    },
+    {
+      "id": "TIDE-083",
+      "title": "Define extension manifest schema",
+      "description": "Create apps/engine/src/extensions/manifest.ts: ExtensionManifestSchema (Zod) for tide-extension.json files. Fields: id (namespaced regex), name, version (semver), description, author?, license?, engine compatibility (semver range), skills array (id, displayName, description, entry path, type: ts-module|llm-template, inputsSchema?, outputsSchema?, permissions: { tools[], commands[], networkAccess }), templates record (id -> path), configuration schema (optional). Extension directory structure: tide-extension.json + skills/ + templates/ + schemas/.",
+      "files": [
+        "apps/engine/src/extensions/manifest.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-084",
+      "title": "Build extension loader and discovery",
+      "description": "Create apps/engine/src/extensions/loader.ts: ExtensionLoader class. discover() scans ~/.tide/extensions (global) and <workspace>/.tide/extensions (workspace-local), looks for tide-extension.json, parses manifests, determines source, checks trust. load(extension) validates permissions against workspace safety policy, loads TS modules, builds SkillDefinitions with namespacing (ext.<extensionId>.<skillId>), registers in SkillRegistry, records in audit log. unload(extensionId) unregisters all skills.",
+      "files": [
+        "apps/engine/src/extensions/loader.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-085",
+      "title": "Build extension trust store",
+      "description": "Create apps/engine/src/extensions/trust-store.ts: TrustStore class with SQLite-backed trust decisions. Table extension_trust: extension_id, workspace_path, trusted (boolean), trusted_version, trusted_at. isTrusted(extensionId, location) — global always trusted, workspace checks DB. setTrust(extensionId, version, trusted). hasVersionChanged(extensionId, currentVersion) — returns true if version differs from trusted version (triggers re-confirmation for supply chain protection).",
+      "files": [
+        "apps/engine/src/extensions/trust-store.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-086",
+      "title": "Build extension sandbox",
+      "description": "Create apps/engine/src/extensions/sandbox.ts: ExtensionSandbox class. loadModule(modulePath, permissions) loads a TS module with restricted capabilities: no process.env access, no child_process (must use run_command tool), no network unless networkAccess=true, no fs access outside workspace and extension directory. Uses Node.js vm module with custom context or restricted require() wrapper. Not a full VM2-style sandbox but enough to prevent accidental misuse.",
+      "files": [
+        "apps/engine/src/extensions/sandbox.ts"
+      ],
+      "status": "pending",
+      "priority": "medium"
+    },
+    {
+      "id": "TIDE-087",
+      "title": "Build ExtensionManager (lifecycle orchestration)",
+      "description": "Create apps/engine/src/extensions/manager.ts: ExtensionManager class. initialize(): discover all -> resolve conflicts (workspace beats global for same id) -> filter enabled+trusted -> load each -> emit events for UI. enableExtension(id), disableExtension(id). getStatus() returns ExtensionStatus[] (id, name, version, location, enabled, trusted, loaded, skillCount, overriddenBy?, errors[]).",
+      "files": [
+        "apps/engine/src/extensions/manager.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-088",
+      "title": "Define CodingBackend interface",
+      "description": "Create apps/engine/src/backends/types.ts: CodingBackend interface with generateAction(request: BuilderRequest) returning AsyncIterable<StreamEvent> and supportsSkill(skillId) boolean. BuilderRequest type: taskContext (planPath, taskId, description, acceptanceCriteria, step/total), contextPack, conversationHistory, abortSignal. All backends must produce valid Tide strict envelopes.",
+      "files": [
+        "apps/engine/src/backends/types.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-089",
+      "title": "Implement native builder backend",
+      "description": "Create apps/engine/src/backends/native-builder.ts: NativeBuilder implements CodingBackend. Uses Tide's own prompts via NativePromptBuilder + ModelRouter. generateAction: builds system prompt with tool descriptions + strict envelope instructions, constructs messages from context pack, routes through ModelRouter, accumulates response, validates against envelope parser. On invalid output: retry with validation error feedback (max 3 retries). Create apps/engine/src/backends/native-prompts.ts: prompt template builder.",
+      "files": [
+        "apps/engine/src/backends/native-builder.ts",
+        "apps/engine/src/backends/native-prompts.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-090",
+      "title": "Implement Pi builder backend",
+      "description": "Create apps/engine/src/backends/pi-builder.ts: PiBuilder implements CodingBackend. Converts Tide's BuilderRequest to Pi-compatible format, calls Pi API via PiClient, converts Pi responses back to Tide StreamEvents, validates against envelope parser. Create apps/engine/src/backends/pi-client.ts: HTTP client for Pi backend. Create apps/engine/src/backends/pi-skill-mapper.ts: bidirectional mapping (pi.file_edit → tide.apply_patch, pi.file_read → tide.fs_read, pi.run_tests → tide.run_command, pi.search → tide.ripgrep). Create apps/engine/src/backends/index.ts: createBackend() factory.",
+      "files": [
+        "apps/engine/src/backends/pi-builder.ts",
+        "apps/engine/src/backends/pi-client.ts",
+        "apps/engine/src/backends/pi-skill-mapper.ts",
+        "apps/engine/src/backends/index.ts"
+      ],
+      "status": "pending",
+      "priority": "medium"
+    },
+    {
+      "id": "TIDE-091",
+      "title": "Update Orchestrator to use CodingBackend",
+      "description": "Update apps/engine/src/orchestration/orchestrator.ts: inject CodingBackend dependency for the Builder role. Builder phase now calls backend.generateAction() instead of directly calling LLM client. Backend selection configurable (native vs pi) via TIDE.md or settings. Ensure all other roles (Scout, Planner, Validator) continue using ModelRouter directly.",
+      "files": [
+        "apps/engine/src/orchestration/orchestrator.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-092",
+      "title": "Build CommandPalette component",
+      "description": "Create apps/desktop/src/components/CommandPalette/CommandPalette.tsx: Cmd+Shift+P triggered overlay with fuzzy search input. Shows filtered list of commands grouped by category (Skills, File, Git, View). Each command: label, description, optional keyboard shortcut. CommandProvider interface: id, getCommands(). Register providers for built-in commands + skills. Close on Escape or click outside.",
+      "files": [
+        "apps/desktop/src/components/CommandPalette/CommandPalette.tsx",
+        "apps/desktop/src/components/CommandPalette/CommandPalette.module.css"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-093",
+      "title": "Build 'Run Skill...' command palette integration",
+      "description": "Create apps/desktop/src/components/CommandPalette/SkillCommandProvider.tsx: provides one command per registered skill, fetches list from engine via IPC. On execute: if skill has inputs, opens SkillInputDialog; otherwise executes immediately. Create apps/desktop/src/components/CommandPalette/SkillInputDialog.tsx: dynamic form generated from skill's inputsSchema (string, number, boolean, enum, file path picker fields). 'Run' button + validation. Create apps/desktop/src/stores/skillStore.ts: Zustand store with skills list, running skills, execution state, progress.",
+      "files": [
+        "apps/desktop/src/components/CommandPalette/SkillCommandProvider.tsx",
+        "apps/desktop/src/components/CommandPalette/SkillInputDialog.tsx",
+        "apps/desktop/src/stores/skillStore.ts"
+      ],
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "TIDE-094",
+      "title": "Build extension management UI",
+      "description": "Create apps/desktop/src/components/Settings/ExtensionSettings.tsx: settings panel showing all discovered extensions. Each entry: name, version, source badge (Global/Workspace), enabled toggle, trust status indicator. If workspace-local and untrusted: 'Enable & Trust' button with warning about permissions. Extension detail: skills provided, permissions required, version history. Overridden extensions shown with explanation. Wire to engine via IPC for enable/disable/trust actions.",
+      "files": [
+        "apps/desktop/src/components/Settings/ExtensionSettings.tsx",
+        "apps/desktop/src/components/Settings/ExtensionSettings.module.css"
+      ],
+      "status": "pending",
+      "priority": "medium"
+    },
+    {
+      "id": "TIDE-095",
+      "title": "End-to-end extension and skill testing",
+      "description": "Test: 1) Built-in skills accessible via Cmd+Shift+P 'Run Skill...' 2) Create test extension in ~/.tide/extensions/ with tide-extension.json manifest, verify auto-discovery and registration. 3) Create workspace-local extension in .tide/extensions/, verify it shows as untrusted. 4) Enable workspace extension, verify trust recorded and skills registered. 5) Test skill execution with proper sandboxing. 6) Verify same-id conflict resolution (workspace beats global). 7) Change extension version, verify trust re-prompt.",
+      "files": [],
+      "status": "pending",
+      "priority": "high"
+    }
+  ]
+}
