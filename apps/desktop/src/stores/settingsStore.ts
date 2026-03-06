@@ -1,15 +1,31 @@
 import { create } from "zustand";
-import { writeRouterConfig } from "../lib/ipc";
+import {
+  readRouterConfig,
+  writeRouterConfig,
+  readOrchestratorConfig,
+  writeOrchestratorConfig,
+  type OrchestratorConfig,
+} from "../lib/ipc";
+import { useWorkspaceStore } from "./workspace";
 
-export type SettingsSection = "providers" | "routing" | "safety" | "skills" | "shortcuts";
+export const SETTINGS_TAB_PATH = "__settings__";
+
+export type SettingsSection = "providers" | "routing" | "orchestration" | "safety" | "skills" | "shortcuts";
 
 export interface TierModelConfig {
   provider: string;
   id: string;
 }
 
+const DEFAULT_ORC_CONFIG: OrchestratorConfig = {
+  reviewMode: "fresh_session",
+  maxReviewIterations: 2,
+  qaCommands: [],
+  clarifyTimeoutSecs: 120,
+  lockModelDuringOrchestration: true,
+};
+
 interface SettingsState {
-  isOpen: boolean;
   activeSection: SettingsSection;
   autoMode: boolean;
   tierModels: {
@@ -17,23 +33,52 @@ interface SettingsState {
     standard?: TierModelConfig;
     complex?: TierModelConfig;
   };
+  orchestratorConfig: OrchestratorConfig;
 
+  load: () => Promise<void>;
   open: (section?: SettingsSection) => void;
   close: () => void;
   setSection: (section: SettingsSection) => void;
   setAutoMode: (mode: boolean) => void;
   setTierModel: (tier: "quick" | "standard" | "complex", model: TierModelConfig | undefined) => void;
+  updateOrchestratorConfig: (partial: Partial<OrchestratorConfig>) => void;
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
-  isOpen: false,
   activeSection: "providers",
   autoMode: true,
   tierModels: {},
+  orchestratorConfig: { ...DEFAULT_ORC_CONFIG },
 
-  open: (section) =>
-    set({ isOpen: true, activeSection: section ?? "providers" }),
-  close: () => set({ isOpen: false }),
+  load: async () => {
+    try {
+      const config = await readRouterConfig();
+      set({ autoMode: config.autoSwitch });
+    } catch {
+      // keep defaults
+    }
+    try {
+      const orcConfig = await readOrchestratorConfig();
+      set({ orchestratorConfig: { ...DEFAULT_ORC_CONFIG, ...orcConfig } });
+    } catch {
+      // keep defaults
+    }
+  },
+
+  open: (section) => {
+    if (section) set({ activeSection: section });
+    const ws = useWorkspaceStore.getState();
+    ws.openFile({
+      path: SETTINGS_TAB_PATH,
+      name: "Settings",
+      content: "",
+      isDirty: false,
+      language: "",
+    });
+  },
+  close: () => {
+    useWorkspaceStore.getState().closeTab(SETTINGS_TAB_PATH);
+  },
   setSection: (section) => set({ activeSection: section }),
   setAutoMode: (mode) => {
     set({ autoMode: mode });
@@ -48,5 +93,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }
     set({ tierModels });
     // TODO: persist tierModels to router-config.json when backend supports it
+  },
+  updateOrchestratorConfig: (partial) => {
+    const merged = { ...get().orchestratorConfig, ...partial };
+    set({ orchestratorConfig: merged });
+    writeOrchestratorConfig(merged).catch((e) =>
+      console.error("Failed to write orchestrator config:", e),
+    );
   },
 }));

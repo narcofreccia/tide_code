@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { classifyPrompt } from "./tide-classify.js";
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -106,7 +107,6 @@ export default function tidePlanner(pi: ExtensionAPI) {
   // knows what has been done and what remains.
   pi.on("before_agent_start", async (event, ctx) => {
     const userMessage = event.prompt || "";
-    const lower = userMessage.toLowerCase();
 
     // Build context from active plan (if any)
     const plans = listPlans(ctx.cwd);
@@ -147,12 +147,9 @@ export default function tidePlanner(pi: ExtensionAPI) {
       }
     }
 
-    // Inject planning instructions for complex tasks
-    const complexIndicators = [
-      "refactor", "architect", "redesign", "implement", "migrate",
-      "rewrite", "overhaul", "restructure", "build out", "from scratch",
-    ];
-    const isComplex = complexIndicators.some((kw) => lower.includes(kw)) || lower.length > 500;
+    // Use the router's unified classification instead of duplicating keyword lists
+    const { tier } = classifyPrompt(userMessage, ctx.cwd);
+    const isComplex = tier === "complex";
 
     const injections: string[] = [];
 
@@ -187,6 +184,18 @@ export default function tidePlanner(pi: ExtensionAPI) {
         "3. Call `tide_plan_step_summary` with a concise summary of what was done\n" +
         "4. Call `tide_plan_update` to mark it `completed`\n\n" +
         "IMPORTANT: Do NOT skip the exploration phase. Plans without thorough codebase understanding are always shallow.",
+      );
+    }
+
+    // When there IS an active plan, tell the model how to revise it
+    if (activePlan) {
+      injections.push(
+        "## Plan Revision\n\n" +
+        "An active plan exists. If the user asks to **enhance, revise, edit, refine, redo, or add more details** " +
+        "to the plan, use `tide_plan_revise` with the existing plan ID (`" + activePlan.id + "`) — " +
+        "do NOT create a new plan with `tide_plan_create`. " +
+        "`tide_plan_revise` preserves the plan ID, slug, and completion status of matching steps.\n\n" +
+        "Only use `tide_plan_create` when the user explicitly wants a completely new/separate plan.",
       );
     }
 
@@ -300,15 +309,40 @@ export default function tidePlanner(pi: ExtensionAPI) {
       // Broadcast full question set to frontend for rendering
       ctx.ui.setStatus("clarify", JSON.stringify({ questions: params.questions }));
 
-      // Block until user responds — input() returns user's answer string
-      const response = await ctx.ui.input("Plan Clarification", "Waiting for your answers...");
+      // Load clarify timeout from orchestrator config
+      let timeoutSecs = 120;
+      try {
+        const configPath = path.join(ctx.cwd, ".tide", "orchestrator-config.json");
+        if (fs.existsSync(configPath)) {
+          const cfg = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+          if (typeof cfg.clarifyTimeoutSecs === "number") {
+            timeoutSecs = cfg.clarifyTimeoutSecs;
+          }
+        }
+      } catch { /* use default */ }
+
+      // Block until user responds, with optional timeout to prevent orchestration hangs
+      let response: string | undefined;
+      const inputPromise = ctx.ui.input("Plan Clarification", "Waiting for your answers...");
+
+      if (timeoutSecs > 0) {
+        const timeoutPromise = new Promise<undefined>((resolve) =>
+          setTimeout(() => resolve(undefined), timeoutSecs * 1000),
+        );
+        response = await Promise.race([inputPromise, timeoutPromise]);
+      } else {
+        response = await inputPromise;
+      }
 
       // Clear the clarify status
       ctx.ui.setStatus("clarify", undefined);
 
       if (!response) {
+        const reason = timeoutSecs > 0
+          ? `User did not respond within ${timeoutSecs}s — proceeding with best judgment.`
+          : "User skipped clarification.";
         return {
-          content: [{ type: "text" as const, text: "User skipped clarification." }],
+          content: [{ type: "text" as const, text: reason }],
         };
       }
 

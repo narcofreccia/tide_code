@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import React, { useState, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import { openFileByPath } from "../../lib/fileHelpers";
 
@@ -25,85 +25,83 @@ function FileLink({ children, text }: { children: React.ReactNode; text: string 
   );
 }
 
+// Hoisted to module scope so ReactMarkdown doesn't see a new reference every render
+const markdownComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
+  code({ className, children, ...props }) {
+    const isBlock = className?.startsWith("language-");
+    if (isBlock) {
+      return (
+        <div style={s.codeBlock}>
+          <div style={s.codeHeader}>
+            {className?.replace("language-", "") || "code"}
+          </div>
+          <pre style={s.pre}>
+            <code {...props}>{children}</code>
+          </pre>
+        </div>
+      );
+    }
+    const text = String(children).trim();
+    if (isFilePath(text)) {
+      return <FileLink text={text}>{children}</FileLink>;
+    }
+    return <code style={s.inlineCode} {...props}>{children}</code>;
+  },
+  pre({ children }) {
+    return <>{children}</>;
+  },
+  p({ children }) {
+    return <p style={s.paragraph}>{children}</p>;
+  },
+  h1({ children }) {
+    return <h1 style={s.heading}>{children}</h1>;
+  },
+  h2({ children }) {
+    return <h2 style={s.heading}>{children}</h2>;
+  },
+  h3({ children }) {
+    return <h3 style={s.heading}>{children}</h3>;
+  },
+  ul({ children }) {
+    return <ul style={s.list}>{children}</ul>;
+  },
+  ol({ children }) {
+    return <ol style={s.list}>{children}</ol>;
+  },
+  li({ children }) {
+    return <li style={s.listItem}>{children}</li>;
+  },
+  a({ href, children }) {
+    return (
+      <a style={s.link} href={href} target="_blank" rel="noopener noreferrer">
+        {children}
+      </a>
+    );
+  },
+  blockquote({ children }) {
+    return <blockquote style={s.blockquote}>{children}</blockquote>;
+  },
+  hr() {
+    return <hr style={s.hr} />;
+  },
+  strong({ children }) {
+    return <strong style={s.strong}>{children}</strong>;
+  },
+};
+
 interface MessageRendererProps {
   content: string;
 }
 
-export function MessageRenderer({ content }: MessageRendererProps) {
+export const MessageRenderer = React.memo(function MessageRenderer({ content }: MessageRendererProps) {
   return (
     <div style={s.container}>
-      <ReactMarkdown
-        components={{
-          // Code blocks with syntax class
-          code({ className, children, ...props }) {
-            const isBlock = className?.startsWith("language-");
-            if (isBlock) {
-              return (
-                <div style={s.codeBlock}>
-                  <div style={s.codeHeader}>
-                    {className?.replace("language-", "") || "code"}
-                  </div>
-                  <pre style={s.pre}>
-                    <code {...props}>{children}</code>
-                  </pre>
-                </div>
-              );
-            }
-            // Check if inline code looks like a file path
-            const text = String(children).trim();
-            if (isFilePath(text)) {
-              return <FileLink text={text}>{children}</FileLink>;
-            }
-            return <code style={s.inlineCode} {...props}>{children}</code>;
-          },
-          // Block-level pre (wraps code blocks from markdown)
-          pre({ children }) {
-            return <>{children}</>;
-          },
-          p({ children }) {
-            return <p style={s.paragraph}>{children}</p>;
-          },
-          h1({ children }) {
-            return <h1 style={s.heading}>{children}</h1>;
-          },
-          h2({ children }) {
-            return <h2 style={s.heading}>{children}</h2>;
-          },
-          h3({ children }) {
-            return <h3 style={s.heading}>{children}</h3>;
-          },
-          ul({ children }) {
-            return <ul style={s.list}>{children}</ul>;
-          },
-          ol({ children }) {
-            return <ol style={s.list}>{children}</ol>;
-          },
-          li({ children }) {
-            return <li style={s.listItem}>{children}</li>;
-          },
-          a({ href, children }) {
-            return (
-              <a style={s.link} href={href} target="_blank" rel="noopener noreferrer">
-                {children}
-              </a>
-            );
-          },
-          blockquote({ children }) {
-            return <blockquote style={s.blockquote}>{children}</blockquote>;
-          },
-          hr() {
-            return <hr style={s.hr} />;
-          },
-          strong({ children }) {
-            return <strong style={s.strong}>{children}</strong>;
-          },
-        }}
-      >
+      <ReactMarkdown components={markdownComponents}>
         {content}
       </ReactMarkdown>
     </div>
   );
-}
+});
 
 const s: Record<string, React.CSSProperties> = {
   container: {

@@ -7,3 +7,10 @@ target/
 .env
 .env.*
 !.env.example
+
+# Build artifacts
+.tauri-keys/
+apps/desktop/src-tauri/resources/**
+!apps/desktop/src-tauri/resources/**/.gitkeep
+apps/desktop/src-tauri/binaries/
+build.log

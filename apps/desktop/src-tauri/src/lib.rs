@@ -556,6 +556,23 @@ async fn delete_session(
     Ok(())
 }
 
+/// Read the router config from .tide/router-config.json in the workspace.
+#[tauri::command]
+async fn read_router_config(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let root = state.workspace_root.lock().await;
+    let workspace = root.as_ref().ok_or("No workspace open")?;
+
+    let config_path = std::path::PathBuf::from(workspace).join(".tide").join("router-config.json");
+    if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).map_err(|e| e.to_string())
+    } else {
+        Ok(serde_json::json!({ "enabled": true, "autoSwitch": true }))
+    }
+}
+
 /// Write the router config to .tide/router-config.json in the workspace.
 #[tauri::command]
 async fn write_router_config(
@@ -573,6 +590,53 @@ async fn write_router_config(
 
     let config_path = tide_dir.join("router-config.json");
     let config = serde_json::json!({ "enabled": enabled, "autoSwitch": auto_switch });
+    std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap())
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Read orchestrator config from .tide/orchestrator-config.json.
+#[tauri::command]
+async fn read_orchestrator_config(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let root = state.workspace_root.lock().await;
+    let workspace = root.as_ref().ok_or("No workspace open")?;
+
+    let config_path = std::path::PathBuf::from(workspace)
+        .join(".tide")
+        .join("orchestrator-config.json");
+    if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).map_err(|e| e.to_string())
+    } else {
+        // Return defaults
+        Ok(serde_json::json!({
+            "reviewMode": "fresh_session",
+            "maxReviewIterations": 2,
+            "qaCommands": [],
+            "clarifyTimeoutSecs": 120,
+            "lockModelDuringOrchestration": true
+        }))
+    }
+}
+
+/// Write orchestrator config to .tide/orchestrator-config.json.
+#[tauri::command]
+async fn write_orchestrator_config(
+    state: tauri::State<'_, AppState>,
+    config: serde_json::Value,
+) -> Result<(), String> {
+    let root = state.workspace_root.lock().await;
+    let workspace = root.as_ref().ok_or("No workspace open")?;
+
+    let tide_dir = std::path::PathBuf::from(workspace).join(".tide");
+    if !tide_dir.exists() {
+        std::fs::create_dir_all(&tide_dir).map_err(|e| e.to_string())?;
+    }
+
+    let config_path = tide_dir.join("orchestrator-config.json");
     std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap())
         .map_err(|e| e.to_string())?;
 
@@ -701,6 +765,7 @@ async fn get_last_assistant_text(
 
 /// Start an orchestrated multi-phase pipeline: Route → Plan → Build → Review.
 /// Runs in the background. Progress emitted as `orchestration_event` Tauri events.
+/// Includes a heartbeat mechanism so the frontend can detect stalls.
 #[tauri::command]
 async fn orchestrate(
     state: tauri::State<'_, AppState>,
@@ -721,8 +786,33 @@ async fn orchestrate(
     let handle = app_handle.clone();
 
     tokio::spawn(async move {
+        // Heartbeat: emit periodic events so frontend can detect if orchestration stalls.
+        let heartbeat_handle = handle.clone();
+        let heartbeat_flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let heartbeat_running = heartbeat_flag.clone();
+        let heartbeat_task = tokio::spawn(async move {
+            while heartbeat_running.load(std::sync::atomic::Ordering::Relaxed) {
+                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                if !heartbeat_running.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                let _ = heartbeat_handle.emit("orchestration_heartbeat", serde_json::json!({
+                    "timestamp": std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0),
+                }));
+            }
+        });
+
         let orc = orchestrator::Orchestrator::new(workspace);
-        if let Err(e) = orc.run(prompt, pi_handle, handle.clone(), notify).await {
+        let result = orc.run(prompt, pi_handle, handle.clone(), notify).await;
+
+        // Stop heartbeat
+        heartbeat_flag.store(false, std::sync::atomic::Ordering::Relaxed);
+        heartbeat_task.abort();
+
+        if let Err(e) = result {
             tracing::error!("Orchestration failed: {}", e);
             let _ = handle.emit(
                 "orchestration_event",
@@ -1304,6 +1394,138 @@ async fn permissions_save(
     Ok(())
 }
 
+// ── Skills Discovery ────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+struct SkillInfo {
+    name: String,
+    description: String,
+    path: String,
+    source: String, // "global", "workspace", or "package"
+}
+
+/// Discover Pi skills from all standard locations.
+/// Pi looks for SKILL.md files (with frontmatter) in:
+/// 1. ~/.pi/agent/skills/ (global user skills)
+/// 2. .pi/skills/ (workspace-local skills)
+/// 3. Installed packages with skill resources
+#[tauri::command]
+async fn list_skills(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<SkillInfo>, String> {
+    let mut skills = Vec::new();
+
+    // 1. Global skills: ~/.pi/agent/skills/
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let global_dir = std::path::PathBuf::from(&home).join(".pi").join("agent").join("skills");
+    discover_skills_in_dir(&global_dir, "global", &mut skills);
+
+    // 2. Workspace-local skills: .pi/skills/
+    let root = state.workspace_root.lock().await;
+    if let Some(workspace) = root.as_deref() {
+        let ws_dir = std::path::PathBuf::from(workspace).join(".pi").join("skills");
+        discover_skills_in_dir(&ws_dir, "workspace", &mut skills);
+
+        // Also check .tide/skills/ (Tide-specific skill location)
+        let tide_dir = std::path::PathBuf::from(workspace).join(".tide").join("skills");
+        discover_skills_in_dir(&tide_dir, "workspace", &mut skills);
+    }
+
+    // 3. Installed packages: ~/.pi/agent/packages/*/skills/
+    let packages_dir = std::path::PathBuf::from(&home).join(".pi").join("agent").join("packages");
+    if packages_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(&packages_dir) {
+            for entry in entries.flatten() {
+                let pkg_skills = entry.path().join("skills");
+                if pkg_skills.exists() {
+                    let pkg_name = entry.file_name().to_string_lossy().to_string();
+                    discover_skills_in_dir(&pkg_skills, &format!("package:{}", pkg_name), &mut skills);
+                }
+            }
+        }
+    }
+
+    Ok(skills)
+}
+
+fn discover_skills_in_dir(dir: &std::path::Path, source: &str, skills: &mut Vec<SkillInfo>) {
+    if !dir.exists() {
+        return;
+    }
+
+    // Direct .md files in the directory
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md") {
+                if let Some(skill) = parse_skill_file(&path, source) {
+                    skills.push(skill);
+                }
+            } else if path.is_dir() {
+                // Check for SKILL.md in subdirectory
+                let skill_md = path.join("SKILL.md");
+                if skill_md.exists() {
+                    if let Some(skill) = parse_skill_file(&skill_md, source) {
+                        skills.push(skill);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn parse_skill_file(path: &std::path::Path, source: &str) -> Option<SkillInfo> {
+    let content = std::fs::read_to_string(path).ok()?;
+
+    // Parse YAML frontmatter (between --- delimiters)
+    let mut name = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.file_stem().unwrap_or_default().to_string_lossy().to_string());
+    let mut description = String::new();
+
+    if content.starts_with("---") {
+        if let Some(end) = content[3..].find("---") {
+            let frontmatter = &content[3..3 + end];
+            for line in frontmatter.lines() {
+                let line = line.trim();
+                if let Some(val) = line.strip_prefix("name:") {
+                    let val = val.trim().trim_matches('"').trim_matches('\'');
+                    if !val.is_empty() {
+                        name = val.to_string();
+                    }
+                } else if let Some(val) = line.strip_prefix("description:") {
+                    description = val.trim().trim_matches('"').trim_matches('\'').to_string();
+                }
+            }
+        }
+    }
+
+    // If no description from frontmatter, use first non-empty line after frontmatter
+    if description.is_empty() {
+        let body = if content.starts_with("---") {
+            content[3..].find("---").map(|end| &content[6 + end..]).unwrap_or(&content)
+        } else {
+            &content
+        };
+        for line in body.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                description = trimmed.chars().take(200).collect();
+                break;
+            }
+        }
+    }
+
+    Some(SkillInfo {
+        name,
+        description,
+        path: path.to_string_lossy().to_string(),
+        source: source.to_string(),
+    })
+}
+
 // ── Git Commands ────────────────────────────────────────────
 
 #[tauri::command]
@@ -1328,9 +1550,36 @@ async fn git_changed_files(
 
 fn resolve_extension_paths() -> Vec<String> {
     let mut paths = Vec::new();
-    let ext_files = ["tide-safety.ts", "tide-project.ts", "tide-router.ts", "tide-planner.ts", "tide-index.ts"];
 
-    // Try multiple base directories (cwd varies between tauri dev and built app)
+    // Extension base names (without file extension)
+    let ext_names = [
+        "tide-safety", "tide-project", "tide-router",
+        "tide-planner", "tide-index", "tide-web-search",
+        "tide-classify",
+    ];
+
+    // 1. Production: bundled pre-transpiled .js extensions in Resources/pi-extensions/
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(app_dir) = exe.parent() {
+            let resources = app_dir.join("../Resources/pi-extensions");
+            if resources.is_dir() {
+                for name in &ext_names {
+                    let p = resources.join(format!("{}.js", name));
+                    if p.exists() {
+                        if let Ok(abs) = p.canonicalize() {
+                            paths.push(abs.to_string_lossy().to_string());
+                        }
+                    }
+                }
+                if !paths.is_empty() {
+                    tracing::info!("Resolved {} bundled extensions from {:?}", paths.len(), resources);
+                    return paths;
+                }
+            }
+        }
+    }
+
+    // 2. Dev mode: .ts source files from pi-extensions/ directory
     let mut search_dirs: Vec<std::path::PathBuf> = vec![];
     if let Ok(cwd) = std::env::current_dir() {
         search_dirs.push(cwd.join("pi-extensions"));           // from apps/desktop/
@@ -1339,8 +1588,8 @@ fn resolve_extension_paths() -> Vec<String> {
     }
 
     for dir in &search_dirs {
-        for file in &ext_files {
-            let p = dir.join(file);
+        for name in &ext_names {
+            let p = dir.join(format!("{}.ts", name));
             if p.exists() {
                 if let Ok(abs) = p.canonicalize() {
                     paths.push(abs.to_string_lossy().to_string());
@@ -1366,6 +1615,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(AppState {
             pi: Arc::new(Mutex::new(None)),
             workspace_root: Arc::new(Mutex::new(None)),
@@ -1478,6 +1729,7 @@ pub fn run() {
             keychain_get_key,
             keychain_delete_key,
             keychain_has_key,
+            list_skills,
             git_status,
             git_changed_files,
             tags_load,
@@ -1497,7 +1749,10 @@ pub fn run() {
             fork_session,
             set_session_name,
             export_session_html,
+            read_router_config,
             write_router_config,
+            read_orchestrator_config,
+            write_orchestrator_config,
             set_auto_compaction,
             set_auto_retry,
             get_commands,

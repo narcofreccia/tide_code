@@ -37,6 +37,8 @@ struct PlanStep {
     status: String,
     #[serde(default)]
     files: Vec<String>,
+    #[serde(default)]
+    dependencies: Vec<String>,
     #[serde(default, rename = "expectedOutcome")]
     expected_outcome: Option<String>,
     #[serde(default)]
@@ -52,18 +54,84 @@ struct Plan {
     steps: Vec<PlanStep>,
 }
 
+/// Default maximum review→fix cycles.
+const DEFAULT_MAX_REVIEW_ITERATIONS: usize = 2;
+
+// ── Orchestrator Config ─────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrchestratorConfig {
+    /// "fresh_session" (default) or "compact" — how to handle context for review phase.
+    #[serde(default = "default_review_mode")]
+    pub review_mode: String,
+
+    /// Max review→fix iterations before completing anyway.
+    #[serde(default = "default_max_review_iterations")]
+    pub max_review_iterations: usize,
+
+    /// Shell commands to run during review as quality gates (e.g. ["npm run build", "npm test"]).
+    #[serde(default)]
+    pub qa_commands: Vec<String>,
+
+    /// Seconds to wait for user to answer clarifying questions during orchestration. 0 = no timeout.
+    #[serde(default = "default_clarify_timeout")]
+    pub clarify_timeout_secs: u64,
+
+    /// Lock the model selected at routing time for the entire orchestration (prevents router re-routing).
+    #[serde(default = "default_lock_model")]
+    pub lock_model_during_orchestration: bool,
+}
+
+fn default_review_mode() -> String { "fresh_session".to_string() }
+fn default_max_review_iterations() -> usize { DEFAULT_MAX_REVIEW_ITERATIONS }
+fn default_clarify_timeout() -> u64 { 120 }
+fn default_lock_model() -> bool { true }
+
+impl Default for OrchestratorConfig {
+    fn default() -> Self {
+        Self {
+            review_mode: default_review_mode(),
+            max_review_iterations: default_max_review_iterations(),
+            qa_commands: Vec::new(),
+            clarify_timeout_secs: default_clarify_timeout(),
+            lock_model_during_orchestration: default_lock_model(),
+        }
+    }
+}
+
+impl OrchestratorConfig {
+    pub fn load(workspace_root: &str) -> Self {
+        let config_path = std::path::PathBuf::from(workspace_root)
+            .join(".tide")
+            .join("orchestrator-config.json");
+        match std::fs::read_to_string(&config_path) {
+            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+            Err(_) => Self::default(),
+        }
+    }
+}
+
 // ── Orchestrator ────────────────────────────────────────────
 
 pub struct Orchestrator {
     workspace_root: String,
+    config: OrchestratorConfig,
 }
 
 impl Orchestrator {
     pub fn new(workspace_root: String) -> Self {
-        Self { workspace_root }
+        let config = OrchestratorConfig::load(&workspace_root);
+        Self { workspace_root, config }
     }
 
-    /// Run the full orchestration pipeline: Route → Plan → Build → Review → Complete.
+    /// Run the full orchestration pipeline: Route → Plan → Build → Review (loop) → Complete.
+    ///
+    /// Key design decisions:
+    /// - Single session for planning + building (preserves context, enables cache hits)
+    /// - Compact between steps instead of creating fresh sessions
+    /// - Fresh session only for review (clean perspective for QA)
+    /// - Review can loop: findings become fix steps, capped at MAX_REVIEW_ITERATIONS
     pub async fn run(
         &self,
         prompt: String,
@@ -92,55 +160,280 @@ impl Orchestrator {
         }
 
         // ── Phase: Building ─────────────────────────────────
-        for i in 0..total {
-            // Re-read plan from disk each iteration (steps may have been updated)
-            let plan = self.load_plan_by_id(&plan_id)?;
-            let step = &plan.steps[i];
+        // Stay in the same session as planning — the agent already has codebase
+        // context from exploration. Compact between steps to manage context size.
+        self.execute_build_steps(&prompt, &plan_id, total, &pi_handle, &app_handle, &agent_end_notify).await?;
 
+        // ── Phase: Reviewing (iterative QA loop) ────────────
+        // Review mode is configurable: "fresh_session" (default) or "compact".
+        // If review finds issues, they become fix steps and we loop.
+        let max_iterations = self.config.max_review_iterations;
+        let mut review_iteration = 0;
+        loop {
+            review_iteration += 1;
+            let plan = self.load_plan_by_id(&plan_id)?;
+            let current_total = plan.steps.len();
+
+            self.emit_phase(
+                &app_handle,
+                OrcPhase::Reviewing,
+                Some(&plan_id),
+                current_total,
+                current_total,
+                &format!("Reviewing implementation (pass {}/{})", review_iteration, max_iterations),
+            );
+
+            // Context strategy for review phase
+            if self.config.review_mode == "compact" {
+                self.compact(&pi_handle).await;
+            } else {
+                // Default: fresh session for clean perspective
+                self.new_session(&pi_handle, &agent_end_notify).await?;
+            }
+
+            let review_prompt = self.build_review_prompt(&prompt, &plan);
+            self.send_and_wait(&pi_handle, &review_prompt, &agent_end_notify).await?;
+
+            // Check if review created new fix steps
+            let updated_plan = self.load_plan_by_id(&plan_id)?;
+            let pending_steps: Vec<&PlanStep> = updated_plan.steps.iter()
+                .filter(|s| s.status == "pending")
+                .collect();
+
+            if pending_steps.is_empty() || review_iteration >= max_iterations {
+                break;
+            }
+
+            // Execute the fix steps created by review
+            let fix_total = updated_plan.steps.len();
             self.emit_phase(
                 &app_handle,
                 OrcPhase::Building,
                 Some(&plan_id),
+                0,
+                fix_total,
+                &format!("Fixing {} issues from review", pending_steps.len()),
+            );
+
+            // New session for fix steps
+            self.new_session(&pi_handle, &agent_end_notify).await?;
+            self.execute_pending_steps(&prompt, &plan_id, &pi_handle, &app_handle, &agent_end_notify).await?;
+        }
+
+        // ── Phase: Complete ─────────────────────────────────
+        let final_plan = self.load_plan_by_id(&plan_id)?;
+        self.emit_phase(
+            &app_handle,
+            OrcPhase::Complete,
+            Some(&plan_id),
+            final_plan.steps.len(),
+            final_plan.steps.len(),
+            "Orchestration complete!",
+        );
+
+        Ok(())
+    }
+
+    // ── Build Step Execution ────────────────────────────────
+
+    /// Execute build steps in dependency order.
+    /// Steps whose dependencies all completed run next; steps with failed
+    /// dependencies are automatically skipped. This respects the `dependencies`
+    /// field in the plan schema.
+    async fn execute_build_steps(
+        &self,
+        user_prompt: &str,
+        plan_id: &str,
+        total: usize,
+        pi_handle: &PiHandle,
+        app_handle: &tauri::AppHandle,
+        notify: &Arc<Notify>,
+    ) -> Result<(), String> {
+        let execution_order = self.resolve_execution_order(plan_id)?;
+        let mut executed_count = 0;
+
+        for i in execution_order {
+            let plan = self.load_plan_by_id(plan_id)?;
+            let step = &plan.steps[i];
+
+            // Skip already-completed steps (supports resume)
+            if step.status == "completed" || step.status == "skipped" {
+                continue;
+            }
+
+            // Check if all dependencies are satisfied
+            if !step.dependencies.is_empty() {
+                let has_failed_dep = step.dependencies.iter().any(|dep_id| {
+                    plan.steps.iter().any(|s| s.id == *dep_id && s.status == "failed")
+                });
+                let has_pending_dep = step.dependencies.iter().any(|dep_id| {
+                    plan.steps.iter().any(|s| s.id == *dep_id && s.status != "completed" && s.status != "skipped")
+                });
+
+                if has_failed_dep {
+                    tracing::warn!("Skipping step '{}' — dependency failed", step.title);
+                    self.mark_step_failed(plan_id, &step.id, "dependency failed");
+                    self.emit_phase(
+                        app_handle, OrcPhase::Building, Some(plan_id), i + 1, total,
+                        &format!("Skipping step {}: dependency failed", step.title),
+                    );
+                    continue;
+                }
+                if has_pending_dep {
+                    // This shouldn't happen with correct topological sort, but guard against it
+                    tracing::warn!("Skipping step '{}' — dependency not yet completed", step.title);
+                    continue;
+                }
+            }
+
+            executed_count += 1;
+            self.emit_phase(
+                app_handle,
+                OrcPhase::Building,
+                Some(plan_id),
                 i + 1,
                 total,
                 &format!("Step {}/{}: {}", i + 1, total, step.title),
             );
 
-            // Fresh session for each step
-            self.new_session(&pi_handle, &agent_end_notify).await?;
+            // Compact context before each step (except the first) to keep
+            // context window manageable while preserving key information.
+            if executed_count > 1 {
+                self.compact(pi_handle).await;
+            }
 
-            // Build the step prompt with full context
-            let step_prompt = self.build_step_prompt(&prompt, &plan, i);
-            self.send_and_wait(&pi_handle, &step_prompt, &agent_end_notify).await?;
+            let step_prompt = self.build_step_prompt(user_prompt, &plan, i);
+
+            // Execute step with error recovery
+            match self.send_and_wait(pi_handle, &step_prompt, notify).await {
+                Ok(()) => {}
+                Err(e) => {
+                    let error_msg = format!("Step {}/{} '{}' failed: {}", i + 1, total, step.title, e);
+                    tracing::error!("{}", error_msg);
+
+                    // Mark step as failed in the plan
+                    self.mark_step_failed(plan_id, &step.id, &e);
+
+                    self.emit_phase(
+                        app_handle,
+                        OrcPhase::Building,
+                        Some(plan_id),
+                        i + 1,
+                        total,
+                        &error_msg,
+                    );
+
+                    // Continue to next step rather than aborting the entire pipeline
+                    continue;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve execution order via topological sort of step dependencies.
+    /// Falls back to natural order if no dependencies are specified.
+    fn resolve_execution_order(&self, plan_id: &str) -> Result<Vec<usize>, String> {
+        let plan = self.load_plan_by_id(plan_id)?;
+        let n = plan.steps.len();
+
+        // Check if any step has dependencies
+        let has_deps = plan.steps.iter().any(|s| !s.dependencies.is_empty());
+        if !has_deps {
+            return Ok((0..n).collect());
         }
 
-        // ── Phase: Reviewing ────────────────────────────────
-        self.emit_phase(
-            &app_handle,
-            OrcPhase::Reviewing,
-            Some(&plan_id),
-            total,
-            total,
-            "Reviewing implementation...",
-        );
+        // Build adjacency list and in-degree count for Kahn's algorithm
+        let id_to_idx: std::collections::HashMap<&str, usize> = plan.steps
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.id.as_str(), i))
+            .collect();
 
-        // Fresh session for review
-        self.new_session(&pi_handle, &agent_end_notify).await?;
+        let mut in_degree = vec![0usize; n];
+        let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
 
-        let plan = self.load_plan_by_id(&plan_id)?;
-        let review_prompt = self.build_review_prompt(&prompt, &plan);
-        self.send_and_wait(&pi_handle, &review_prompt, &agent_end_notify).await?;
+        for (i, step) in plan.steps.iter().enumerate() {
+            for dep_id in &step.dependencies {
+                if let Some(&dep_idx) = id_to_idx.get(dep_id.as_str()) {
+                    adj[dep_idx].push(i);
+                    in_degree[i] += 1;
+                }
+            }
+        }
 
-        // ── Phase: Complete ─────────────────────────────────
-        self.emit_phase(
-            &app_handle,
-            OrcPhase::Complete,
-            Some(&plan_id),
-            total,
-            total,
-            "Orchestration complete!",
-        );
+        // Kahn's topological sort
+        let mut queue: std::collections::VecDeque<usize> = in_degree
+            .iter()
+            .enumerate()
+            .filter(|(_, &deg)| deg == 0)
+            .map(|(i, _)| i)
+            .collect();
 
+        let mut order = Vec::with_capacity(n);
+        while let Some(node) = queue.pop_front() {
+            order.push(node);
+            for &next in &adj[node] {
+                in_degree[next] -= 1;
+                if in_degree[next] == 0 {
+                    queue.push_back(next);
+                }
+            }
+        }
+
+        // If we couldn't sort all nodes, there's a cycle — fall back to natural order
+        if order.len() != n {
+            tracing::warn!("Dependency cycle detected in plan steps, falling back to natural order");
+            return Ok((0..n).collect());
+        }
+
+        Ok(order)
+    }
+
+    /// Execute only pending steps (used for fix steps created by review).
+    async fn execute_pending_steps(
+        &self,
+        user_prompt: &str,
+        plan_id: &str,
+        pi_handle: &PiHandle,
+        app_handle: &tauri::AppHandle,
+        notify: &Arc<Notify>,
+    ) -> Result<(), String> {
+        let plan = self.load_plan_by_id(plan_id)?;
+        let total = plan.steps.len();
+        let pending_indices: Vec<usize> = plan.steps.iter()
+            .enumerate()
+            .filter(|(_, s)| s.status == "pending")
+            .map(|(i, _)| i)
+            .collect();
+
+        for (exec_num, &i) in pending_indices.iter().enumerate() {
+            let plan = self.load_plan_by_id(plan_id)?;
+            let step = &plan.steps[i];
+
+            self.emit_phase(
+                app_handle,
+                OrcPhase::Building,
+                Some(plan_id),
+                i + 1,
+                total,
+                &format!("Fix {}/{}: {}", exec_num + 1, pending_indices.len(), step.title),
+            );
+
+            if exec_num > 0 {
+                self.compact(pi_handle).await;
+            }
+
+            let step_prompt = self.build_step_prompt(user_prompt, &plan, i);
+            match self.send_and_wait(pi_handle, &step_prompt, notify).await {
+                Ok(()) => {}
+                Err(e) => {
+                    tracing::error!("Fix step '{}' failed: {}", step.title, e);
+                    self.mark_step_failed(plan_id, &step.id, &e);
+                    continue;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -185,6 +478,15 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Request Pi to compact the current session context.
+    /// Non-blocking: we fire the compact command and let Pi handle it.
+    async fn compact(&self, pi_handle: &PiHandle) {
+        let cmd = serde_json::json!({ "type": "compact" });
+        if let Err(e) = pi_handle.send(&cmd).await {
+            tracing::warn!("Failed to send compact command: {}", e);
+        }
+    }
+
     async fn new_session(
         &self,
         pi_handle: &PiHandle,
@@ -196,21 +498,56 @@ impl Orchestrator {
             .await
             .map_err(|e| format!("Failed to create new session: {}", e))?;
 
-        // Wait briefly for the session to initialize
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        // Consume any pending notification from session creation
+        // Wait for Pi to process the new_session command.
+        // Pi emits session events; we use a short timeout to consume any
+        // pending notification and allow the session to initialize.
         let _ = tokio::time::timeout(
-            tokio::time::Duration::from_millis(100),
+            tokio::time::Duration::from_millis(300),
             notify.notified(),
         )
         .await;
         Ok(())
     }
 
+    /// Mark a step as failed in the plan JSON on disk.
+    fn mark_step_failed(&self, plan_id: &str, step_id: &str, error: &str) {
+        if let Ok(mut plan) = self.load_plan_by_id(plan_id) {
+            if let Some(step) = plan.steps.iter_mut().find(|s| s.id == step_id) {
+                step.status = "failed".to_string();
+                step.summary = Some(format!("Failed: {}", error));
+            }
+            self.save_plan(&plan);
+        }
+    }
+
     fn plans_dir(&self) -> std::path::PathBuf {
         std::path::PathBuf::from(&self.workspace_root)
             .join(".tide")
             .join("plans")
+    }
+
+    fn save_plan(&self, plan: &Plan) {
+        let dir = self.plans_dir();
+        if !dir.exists() {
+            let _ = std::fs::create_dir_all(&dir);
+        }
+        // Find the plan file by scanning for matching ID
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                    continue;
+                }
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Ok(existing) = serde_json::from_str::<Plan>(&content) {
+                        if existing.id == plan.id {
+                            let _ = std::fs::write(&path, serde_json::to_string_pretty(plan).unwrap_or_default());
+                            return;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn load_latest_plan(&self) -> Result<Plan, String> {
@@ -267,19 +604,69 @@ impl Orchestrator {
         Err(format!("Plan not found: {}", plan_id))
     }
 
+    /// Returns the orchestration marker prefix if model locking is enabled.
+    fn orc_marker(&self) -> &str {
+        if self.config.lock_model_during_orchestration {
+            "[tide:orchestrated]\n"
+        } else {
+            ""
+        }
+    }
+
     // ── Prompt Builders ─────────────────────────────────────
 
     fn build_planning_prompt(&self, user_prompt: &str) -> String {
+        // Check if research cache exists from a previous planning session
+        let research_path = std::path::PathBuf::from(&self.workspace_root)
+            .join(".tide")
+            .join("research.md");
+        let research_context = if research_path.exists() {
+            match std::fs::read_to_string(&research_path) {
+                Ok(content) if !content.trim().is_empty() => {
+                    format!(
+                        "## Cached Research\n\n\
+                         Previous exploration findings (may be stale — verify key assumptions):\n\n\
+                         {}\n\n",
+                        content.chars().take(4000).collect::<String>()
+                    )
+                }
+                _ => String::new(),
+            }
+        } else {
+            String::new()
+        };
+
+        let clarify_instruction = if self.config.clarify_timeout_secs > 0 {
+            format!(
+                "2. Ask clarifying questions using `tide_plan_clarify` if there are ambiguities \
+                 (user has {}s to respond before auto-skip)\n",
+                self.config.clarify_timeout_secs
+            )
+        } else {
+            "2. Ask clarifying questions using `tide_plan_clarify` if there are ambiguities\n".to_string()
+        };
+
+        let marker = self.orc_marker();
         format!(
-            "You are in PLANNING MODE. Do NOT implement anything yet.\n\n\
+            "{marker}\
+             You are in PLANNING MODE. Do NOT implement anything yet.\n\n\
              Follow these steps:\n\
              1. Explore the codebase to understand the current architecture\n\
-             2. Ask clarifying questions using `tide_plan_clarify` if there are ambiguities\n\
-             3. Create a detailed implementation plan using `tide_plan_create`\n\n\
+             {clarify_instruction}\
+             3. Create a detailed implementation plan using `tide_plan_create`\n\
+             4. Write a research summary to `.tide/research.md` capturing:\n\
+                - Key file paths and their roles\n\
+                - Existing patterns and conventions found\n\
+                - Architecture decisions relevant to this task\n\
+                - Any gotchas or constraints discovered\n\
+                This cache helps future build steps avoid re-exploring the codebase.\n\n\
+             {research_context}\
              ## Original Request\n\n\
-             {}\n\n\
-             IMPORTANT: Only explore and plan. Do NOT write or edit any code files.",
-            user_prompt
+             {user_prompt}\n\n\
+             IMPORTANT: Only explore, plan, and write research.md. Do NOT implement any code changes.",
+            clarify_instruction = clarify_instruction,
+            research_context = research_context,
+            user_prompt = user_prompt,
         )
     }
 
@@ -287,7 +674,25 @@ impl Orchestrator {
         let step = &plan.steps[step_index];
         let total = plan.steps.len();
 
-        // Build completed steps summaries
+        // Load research cache if available (written during planning phase)
+        let research_path = std::path::PathBuf::from(&self.workspace_root)
+            .join(".tide")
+            .join("research.md");
+        let research_section = if research_path.exists() {
+            match std::fs::read_to_string(&research_path) {
+                Ok(content) if !content.trim().is_empty() => {
+                    format!(
+                        "## Codebase Research\n\n{}\n\n",
+                        content.chars().take(3000).collect::<String>()
+                    )
+                }
+                _ => String::new(),
+            }
+        } else {
+            String::new()
+        };
+
+        // Build completed steps summaries (lightweight context from prior steps)
         let completed_summaries: Vec<String> = plan
             .steps
             .iter()
@@ -304,6 +709,24 @@ impl Orchestrator {
             )
         };
 
+        // Build remaining steps as a brief outline (not full JSON)
+        let remaining_summaries: Vec<String> = plan
+            .steps
+            .iter()
+            .enumerate()
+            .filter(|(i, s)| *i > step_index && s.status == "pending")
+            .map(|(i, s)| format!("- Step {}: {}", i + 1, s.title))
+            .collect();
+
+        let remaining_section = if remaining_summaries.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "## Remaining Steps\n\n{}\n\n",
+                remaining_summaries.join("\n")
+            )
+        };
+
         let files_section = if step.files.is_empty() {
             String::new()
         } else {
@@ -315,32 +738,32 @@ impl Orchestrator {
             None => String::new(),
         };
 
-        let plan_json =
-            serde_json::to_string_pretty(plan).unwrap_or_else(|_| "{}".to_string());
-
+        let marker = self.orc_marker();
         format!(
-            "You are executing step {step_num}/{total} of an implementation plan.\n\n\
+            "{marker}\
+             You are executing step {step_num}/{total} of an implementation plan.\n\n\
              ## Original Task\n\n\
              {user_prompt}\n\n\
-             ## Full Plan\n\n\
-             ```json\n{plan_json}\n```\n\n\
+             {research_section}\
              {completed_section}\
              ## Current Step: {step_title}\n\n\
              {step_desc}\n\
              {files_section}\
              {outcome_section}\n\
+             {remaining_section}\
              Execute ONLY this step. When done:\n\
              1. Call `tide_plan_update` with planId=\"{plan_id}\", stepId=\"{step_id}\", status=\"completed\"\n\
              2. Call `tide_plan_step_summary` with a concise summary of what you did",
             step_num = step_index + 1,
             total = total,
             user_prompt = user_prompt,
-            plan_json = plan_json,
+            research_section = research_section,
             completed_section = completed_section,
             step_title = step.title,
             step_desc = step.description,
             files_section = files_section,
             outcome_section = outcome_section,
+            remaining_section = remaining_section,
             plan_id = plan.id,
             step_id = step.id,
         )
@@ -356,24 +779,66 @@ impl Orchestrator {
             })
             .collect();
 
+        // Collect all files referenced across steps for the reviewer
+        let all_files: Vec<&str> = plan
+            .steps
+            .iter()
+            .flat_map(|s| s.files.iter().map(|f| f.as_str()))
+            .collect::<std::collections::HashSet<&str>>()
+            .into_iter()
+            .collect();
+
+        let files_section = if all_files.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "## Modified Files\n\n\
+                 Read these files to verify the implementation:\n{}\n\n",
+                all_files.iter().map(|f| format!("- `{}`", f)).collect::<Vec<_>>().join("\n")
+            )
+        };
+
+        // Build QA commands section if configured
+        let qa_section = if self.config.qa_commands.is_empty() {
+            "4. Run build/test commands if available (check TIDE.md for test commands)\n".to_string()
+        } else {
+            let cmds = self.config.qa_commands.iter()
+                .map(|c| format!("   - `{}`", c))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                "4. **MANDATORY**: Run these QA commands and report their output:\n{}\n\
+                 If any command fails, you MUST create fix steps to address the failures.\n",
+                cmds
+            )
+        };
+
+        let marker = self.orc_marker();
         format!(
-            "You are reviewing a completed implementation.\n\n\
+            "{marker}\
+             You are reviewing a completed implementation.\n\n\
              ## Original Task\n\n\
-             {}\n\n\
-             ## Plan: {}\n\n\
-             {}\n\n\
+             {user_prompt}\n\n\
+             ## Plan: {plan_title}\n\n\
+             {plan_desc}\n\n\
              ## Step Summaries\n\n\
-             {}\n\n\
-             ## Review Checklist\n\n\
-             1. Verify all plan steps were addressed\n\
+             {step_summaries}\n\n\
+             {files_section}\
+             ## Review Instructions\n\n\
+             1. Read the modified files listed above to verify the implementation\n\
              2. Check for consistency issues between steps\n\
-             3. Look for any missing imports, broken references, or integration gaps\n\
-             4. Run build/test commands if available\n\
-             5. Report any problems found or confirm the implementation looks correct",
-            user_prompt,
-            plan.title,
-            plan.description,
-            step_summaries.join("\n"),
+             3. Look for missing imports, broken references, or integration gaps\n\
+             {qa_section}\
+             5. If you find issues that need fixing:\n\
+                - Call `tide_plan_revise` to add new fix steps to the plan (append them after existing steps)\n\
+                - Set their status to \"pending\" so they get executed\n\
+             6. If everything looks correct, confirm the implementation is complete",
+            user_prompt = user_prompt,
+            plan_title = plan.title,
+            plan_desc = plan.description,
+            step_summaries = step_summaries.join("\n"),
+            files_section = files_section,
+            qa_section = qa_section,
         )
     }
 }

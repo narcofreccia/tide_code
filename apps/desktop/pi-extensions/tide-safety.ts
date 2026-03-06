@@ -154,6 +154,38 @@ export default function tideSafety(pi: ExtensionAPI) {
     safetyConfig = loadSafetyConfig(ctx.cwd);
   });
 
+  // Fix: Strip OpenAI reasoning signatures from assistant messages before sending to LLM.
+  // OpenAI's Responses API returns thinkingSignature IDs that reference server-side state.
+  // When store=false, these IDs become invalid on subsequent turns, causing 404 errors.
+  // This context hook removes them so the conversation can continue without errors.
+  pi.on("context", async (event) => {
+    const messages = event.messages;
+    let modified = false;
+    const cleaned = messages.map((msg: any) => {
+      if (msg.role !== "assistant" || !Array.isArray(msg.content)) return msg;
+      const hasThinkingSig = msg.content.some(
+        (part: any) => part.type === "thinking" && part.thinkingSignature,
+      );
+      if (!hasThinkingSig) return msg;
+      modified = true;
+      return {
+        ...msg,
+        content: msg.content.map((part: any) => {
+          if (part.type === "thinking" && part.thinkingSignature) {
+            // Keep thinking text (if any) but remove the signature ID
+            const { thinkingSignature, ...rest } = part;
+            return rest;
+          }
+          return part;
+        }),
+      };
+    });
+    if (modified) {
+      process.stderr.write("[tide:safety] Stripped thinkingSignature from assistant messages\n");
+      return { messages: cleaned };
+    }
+  });
+
   pi.on("tool_call", async (event, ctx) => {
     const toolName = event.toolName;
     const args = (event.input ?? {}) as Record<string, unknown>;

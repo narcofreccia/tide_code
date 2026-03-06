@@ -3,7 +3,7 @@ import type { PiEvent } from "../lib/pi-events";
 import { useContextStore } from "./contextStore";
 import { useLogStore } from "./logStore";
 import { useWorkspaceStore } from "./workspace";
-import { getMessages, getPiState, getSessionStats, setSessionName } from "../lib/ipc";
+import { followUp, getMessages, getPiState, getSessionStats, setSessionName } from "../lib/ipc";
 import { useOrchestrationStore } from "./orchestrationStore";
 
 /** Get current orchestration phase without triggering React re-renders. */
@@ -34,7 +34,7 @@ export interface SystemMessage {
   id: string;
   content: string;
   timestamp: number;
-  icon?: "model" | "router" | "info";
+  icon?: "model" | "router" | "info" | "error";
 }
 
 export interface ToolCallMessage {
@@ -101,6 +101,7 @@ interface StreamState {
   hasAutoTitled: boolean;
   sessionStatus: SessionStatus;
   _agentStartMsgCount: number;
+  _emptyRetryCount: number;
 
   handlePiEvent: (event: PiEvent) => void;
   addUserMessage: (content: string) => void;
@@ -126,6 +127,7 @@ function generateSessionTitle(text: string): string {
 }
 
 let msgCounter = 0;
+let hasLoggedFirstDelta = false;
 function nextId() {
   return `msg-${++msgCounter}-${Date.now()}`;
 }
@@ -150,6 +152,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   hasAutoTitled: false,
   sessionStatus: "idle" as SessionStatus,
   _agentStartMsgCount: 0,
+  _emptyRetryCount: 0,
 
   addUserMessage: (content: string) => {
     set((state) => ({
@@ -175,7 +178,8 @@ export const useStreamStore = create<StreamState>((set, get) => ({
 
     switch (event.type) {
       case "agent_start": {
-        console.debug("[Tide:event] agent_start — msgCount:", get().messages.length, "model:", get().modelName);
+        console.debug("[Tide:event] agent_start — msgCount:", get().messages.length, "model:", get().modelName, "retryCount:", get()._emptyRetryCount);
+        hasLoggedFirstDelta = false;
         const thinkingId = nextId();
         set((state) => ({
           agentActive: true,
@@ -194,36 +198,83 @@ export const useStreamStore = create<StreamState>((set, get) => ({
 
       case "agent_end": {
         const startCount = get()._agentStartMsgCount ?? 0;
-        // Remove thinking indicator, mark current assistant message as done
-        set((state) => {
-          const cleaned = state.messages
-            .filter((m) => m.role !== "thinking")
-            .map((m) =>
-              m.role === "assistant" && m.streaming
-                ? { ...m, streaming: false }
-                : m,
-            );
-          // Detect silent failure: no assistant text received during this agent turn
-          const hasResponse = cleaned.slice(startCount).some(
-            (m) => m.role === "assistant" && (m as AssistantMessage).content.trim().length > 0
+        const retryCount = get()._emptyRetryCount;
+
+        // Build cleaned messages: remove thinking, mark streaming done
+        const cleaned = get().messages
+          .filter((m) => m.role !== "thinking")
+          .map((m) =>
+            m.role === "assistant" && m.streaming
+              ? { ...m, streaming: false }
+              : m,
           );
-          console.debug("[Tide:event] agent_end — msgCount:", cleaned.length, "hasResponse:", hasResponse);
-          if (!hasResponse && startCount > 0) {
-            console.warn("[Tide] No assistant response received from model — possible silent failure");
-            cleaned.push({
-              role: "system" as const,
-              id: nextId(),
-              content: "No response received from model. The model may have returned an empty response or the connection was interrupted.",
-              timestamp: Date.now(),
-              icon: "info" as const,
-            });
-          }
-          return {
-            agentActive: false,
-            isStreaming: false,
+
+        // Check if we got a real response during this agent turn
+        const newMsgs = cleaned.slice(startCount);
+        const hasAssistantText = newMsgs.some(
+          (m) => m.role === "assistant" && (m as AssistantMessage).content.trim().length > 0
+        );
+        const hasToolCalls = newMsgs.some((m) => m.role === "tool_call");
+        const hasErrorMsg = newMsgs.some(
+          (m) => m.role === "system" && (m as SystemMessage).icon === "error"
+        );
+        console.debug("[Tide:event] agent_end — msgCount:", cleaned.length, "hasText:", hasAssistantText, "hasTools:", hasToolCalls, "hasError:", hasErrorMsg, "retryCount:", retryCount);
+
+        if (!hasAssistantText && !hasToolCalls && !hasErrorMsg && startCount > 0 && retryCount < 1) {
+          // Empty response on first attempt — auto-retry once
+          console.warn("[Tide] Empty response from model — auto-retrying");
+          set({
+            _emptyRetryCount: retryCount + 1,
             messages: cleaned,
-          };
+            // Keep streaming state active for the retry
+          });
+          setTimeout(() => {
+            followUp("Please respond to my previous message.").catch((err) => {
+              console.error("[Tide] Auto-retry failed:", err);
+              set((s) => ({
+                agentActive: false,
+                isStreaming: false,
+                _emptyRetryCount: 0,
+                messages: [
+                  ...s.messages.filter((m) => m.role !== "thinking"),
+                  {
+                    role: "system" as const,
+                    id: nextId(),
+                    content: "No response received from model. The model may have returned an empty response or the connection was interrupted.",
+                    timestamp: Date.now(),
+                    icon: "info" as const,
+                  },
+                ],
+              }));
+            });
+          }, 500);
+          break; // Don't run post-agent cleanup — retry will trigger another agent_end
+        }
+
+        // Reset retry counter on success or final failure
+        if (hasAssistantText || hasToolCalls) {
+          set({ _emptyRetryCount: 0 });
+        }
+
+        // Final failure after retry — show error (unless error already surfaced)
+        if (!hasAssistantText && !hasToolCalls && !hasErrorMsg && startCount > 0) {
+          console.warn("[Tide] No assistant response after retry — giving up");
+          cleaned.push({
+            role: "system" as const,
+            id: nextId(),
+            content: "No response received from model. The model may have returned an empty response or the connection was interrupted.",
+            timestamp: Date.now(),
+            icon: "info" as const,
+          });
+        }
+
+        set({
+          agentActive: false,
+          isStreaming: false,
+          messages: cleaned,
+          _emptyRetryCount: 0,
         });
+
         // Refresh model info + context usage after agent completes
         getPiState().catch(() => {});
         getSessionStats().catch(() => {});
@@ -248,36 +299,35 @@ export const useStreamStore = create<StreamState>((set, get) => ({
           : ame?.text ?? ame?.delta
           ?? raw.text ?? raw.delta ?? raw.content ?? null;
         if (typeof delta === "string") {
-          // Log first delta only to confirm text is arriving
-          const isFirst = !get().messages.some(m => m.role === "assistant" && (m as AssistantMessage).streaming);
-          if (isFirst) {
+          if (!hasLoggedFirstDelta) {
+            hasLoggedFirstDelta = true;
             console.debug(`[Tide:event] message_update — first delta, len=${delta.length}, type=${ame?.type || "raw"}`);
           }
           set((state) => {
-            const msgs = [...state.messages];
-            // Remove thinking indicator when first text arrives
-            const thinkingIdx = msgs.findIndex((m) => m.role === "thinking");
-            if (thinkingIdx !== -1) {
-              msgs.splice(thinkingIdx, 1);
-            }
-            // Find or create streaming assistant message
+            const msgs = state.messages;
             const lastMsg = msgs[msgs.length - 1];
-            if (lastMsg?.role === "assistant" && lastMsg.streaming) {
-              msgs[msgs.length - 1] = {
+
+            // FAST PATH: last message is already a streaming assistant — only replace it
+            if (lastMsg?.role === "assistant" && (lastMsg as AssistantMessage).streaming) {
+              const newMsgs = msgs.slice();
+              newMsgs[newMsgs.length - 1] = {
                 ...lastMsg,
-                content: lastMsg.content + delta,
+                content: (lastMsg as AssistantMessage).content + delta,
               };
-            } else {
-              msgs.push({
-                role: "assistant" as const,
-                id: nextId(),
-                content: delta,
-                timestamp: Date.now(),
-                streaming: true,
-                modelName: get().modelName || undefined,
-              });
+              return { messages: newMsgs };
             }
-            return { messages: msgs };
+
+            // SLOW PATH (first delta): remove thinking indicator + create assistant message
+            const newMsgs = msgs.filter(m => m.role !== "thinking");
+            newMsgs.push({
+              role: "assistant" as const,
+              id: nextId(),
+              content: delta,
+              timestamp: Date.now(),
+              streaming: true,
+              modelName: get().modelName || undefined,
+            });
+            return { messages: newMsgs };
           });
         }
         break;
@@ -649,7 +699,26 @@ export const useStreamStore = create<StreamState>((set, get) => ({
         // Some models don't stream text_delta — the full text arrives here.
         // If text was already streamed via message_update, skip to avoid duplication.
         const endMsg = (event as any).message;
-        console.debug("[Tide:event] message_end — hasMessage:", !!endMsg, "role:", endMsg?.role);
+        console.debug("[Tide:event] message_end — hasMessage:", !!endMsg, "role:", endMsg?.role, "stopReason:", endMsg?.stopReason);
+
+        // Surface API errors from the model (e.g. OpenAI 404, rate limits)
+        if (endMsg?.stopReason === "error" && endMsg?.errorMessage) {
+          console.error("[Tide] Model API error:", endMsg.errorMessage);
+          set((state) => ({
+            messages: [
+              ...state.messages.filter((m) => m.role !== "thinking"),
+              {
+                role: "system" as const,
+                id: nextId(),
+                content: `Model error: ${endMsg.errorMessage}`,
+                timestamp: Date.now(),
+                icon: "error" as const,
+              },
+            ],
+          }));
+          break;
+        }
+
         if (endMsg) {
           let text = "";
           if (typeof endMsg.content === "string") {

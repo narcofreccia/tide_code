@@ -26,8 +26,10 @@ interface OrcState {
   currentStep: number;
   totalSteps: number;
   message: string;
+  lastHeartbeat: number | null;
 
   handleEvent: (event: OrcEvent) => void;
+  setLastHeartbeat: (ts: number) => void;
   reset: () => void;
 }
 
@@ -39,6 +41,7 @@ export const useOrchestrationStore = create<OrcState>((set) => ({
   currentStep: 0,
   totalSteps: 0,
   message: "",
+  lastHeartbeat: null,
 
   handleEvent: (event: OrcEvent) => {
     set({
@@ -50,6 +53,8 @@ export const useOrchestrationStore = create<OrcState>((set) => ({
     });
   },
 
+  setLastHeartbeat: (ts: number) => set({ lastHeartbeat: ts }),
+
   reset: () =>
     set({
       phase: "idle",
@@ -57,8 +62,19 @@ export const useOrchestrationStore = create<OrcState>((set) => ({
       currentStep: 0,
       totalSteps: 0,
       message: "",
+      lastHeartbeat: null,
     }),
 }));
+
+const STALL_THRESHOLD_MS = 30_000;
+
+/** Check if orchestration appears stalled (no heartbeat in 30s while active). */
+export function isOrchestrationStalled(): boolean {
+  const { phase, lastHeartbeat } = useOrchestrationStore.getState();
+  const isActive = phase !== "idle" && phase !== "complete" && phase !== "failed";
+  if (!isActive || lastHeartbeat == null) return false;
+  return Date.now() - lastHeartbeat > STALL_THRESHOLD_MS;
+}
 
 // ── Listener ────────────────────────────────────────────────
 
@@ -72,5 +88,14 @@ export function initOrchestrationListener(): void {
     useOrchestrationStore.getState().handleEvent(event.payload);
   }).catch((err) => {
     console.error("[orchestration] Failed to set up listener:", err);
+  });
+
+  listen<{ timestamp: number }>("orchestration_heartbeat", (event) => {
+    const ts = event.payload.timestamp;
+    useOrchestrationStore.getState().setLastHeartbeat(
+      typeof ts === "number" ? ts * 1000 : Date.now(), // backend sends seconds
+    );
+  }).catch((err) => {
+    console.error("[orchestration] Failed to set up heartbeat listener:", err);
   });
 }

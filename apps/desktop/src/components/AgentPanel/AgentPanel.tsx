@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useStreamStore, type ChatMessage, type ToolCallMessage, type SystemMessage } from "../../stores/stream";
 import { sendPrompt, abortAgent, steerAgent, followUp, newSession, listSessions, switchSession, deleteSession, getPiState, orchestrate, type SessionInfo } from "../../lib/ipc";
 import { LogsTab } from "./LogsTab";
@@ -8,7 +8,7 @@ import { ClarifyCard } from "./ClarifyCard";
 import { PipelineProgress } from "./PipelineProgress";
 import { ChangesetViewer } from "./ChangesetViewer";
 import { useApprovalStore } from "../../stores/approvalStore";
-import { useOrchestrationStore } from "../../stores/orchestrationStore";
+import { useOrchestrationStore, isOrchestrationStalled } from "../../stores/orchestrationStore";
 import css from "./AgentPanel.module.css";
 
 type TabId = "chat" | "logs" | "plan";
@@ -346,17 +346,46 @@ export function AgentPanel() {
   const clarifyQuestions = useApprovalStore((s) => s.clarifyQuestions);
   const clarifyInputRequestId = useApprovalStore((s) => s.clarifyInputRequestId);
   const orcPhase = useOrchestrationStore((s) => s.phase);
+  const lastHeartbeat = useOrchestrationStore((s) => s.lastHeartbeat);
   const [forceOrchestrate, setForceOrchestrate] = useState(false);
+  const [isStalled, setIsStalled] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Auto-scroll on new messages
+  // Stall detection: check every 5s while orchestration is active
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    const isActive = orcPhase !== "idle" && orcPhase !== "complete" && orcPhase !== "failed";
+    if (!isActive) {
+      setIsStalled(false);
+      return;
     }
+    const id = setInterval(() => setIsStalled(isOrchestrationStalled()), 5000);
+    return () => clearInterval(id);
+  }, [orcPhase, lastHeartbeat]);
+
+  // Auto-scroll on new messages (rAF-throttled + near-bottom detection)
+  const scrollRafRef = useRef<number | null>(null);
+  const isNearBottom = useRef(true);
+
+  const handleChatScroll = useCallback(() => {
+    if (!scrollRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+    isNearBottom.current = scrollHeight - scrollTop - clientHeight < 80;
+  }, []);
+
+  useEffect(() => {
+    if (!scrollRef.current || !isNearBottom.current) return;
+    if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
+    scrollRafRef.current = requestAnimationFrame(() => {
+      if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      scrollRafRef.current = null;
+    });
   }, [messages]);
+
+  useEffect(() => {
+    return () => { if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current); };
+  }, []);
 
   // Listen for snippet insertions from the editor
   useEffect(() => {
@@ -590,7 +619,7 @@ export function AgentPanel() {
       {activeTab === "chat" ? (
         <>
           {orcPhase !== "idle" && <PipelineProgress />}
-          <div ref={scrollRef} className={css.chatScroll}>
+          <div ref={scrollRef} className={css.chatScroll} onScroll={handleChatScroll}>
             {sessionStatus === "loading" || sessionStatus === "switching" ? (
               <div style={s.sessionLoading}>Loading session...</div>
             ) : messages.length === 0 ? (
@@ -609,10 +638,11 @@ export function AgentPanel() {
           </div>
 
           {/* Status indicators */}
-          {(isCompacting || isRetrying) && (
+          {(isCompacting || isRetrying || isStalled) && (
             <div style={s.statusBar}>
               {isCompacting && <span style={s.statusItem}>Compacting context...</span>}
               {isRetrying && <span style={s.statusItem}>Retrying...</span>}
+              {isStalled && <span style={s.statusItem}>Orchestration may be stalled — no heartbeat received</span>}
             </div>
           )}
 
@@ -712,9 +742,36 @@ export function AgentPanel() {
   );
 }
 
+// ── Streaming-throttled Markdown Renderer ────────────────────
+
+const StreamingMessageRenderer = React.memo(function StreamingMessageRenderer({ content }: { content: string }) {
+  const [rendered, setRendered] = useState(content);
+  const rafRef = useRef<number | null>(null);
+  const latestRef = useRef(content);
+  const lastUpdateRef = useRef(0);
+  latestRef.current = content;
+
+  useEffect(() => {
+    const now = performance.now();
+    if (now - lastUpdateRef.current >= 80) {
+      setRendered(content);
+      lastUpdateRef.current = now;
+    } else {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = requestAnimationFrame(() => {
+        setRendered(latestRef.current);
+        lastUpdateRef.current = performance.now();
+      });
+    }
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [content]);
+
+  return <MessageRenderer content={rendered} />;
+});
+
 // ── Message Bubbles ─────────────────────────────────────────
 
-function ChatBubble({ message }: { message: ChatMessage }) {
+const ChatBubble = React.memo(function ChatBubble({ message }: { message: ChatMessage }) {
   switch (message.role) {
     case "user":
       return (
@@ -735,7 +792,10 @@ function ChatBubble({ message }: { message: ChatMessage }) {
             {message.streaming && <span style={s.streamingDot} />}
           </div>
           <div style={s.assistantBubble}>
-            <MessageRenderer content={message.content} />
+            {message.streaming
+              ? <StreamingMessageRenderer content={message.content} />
+              : <MessageRenderer content={message.content} />
+            }
           </div>
         </div>
       );
@@ -752,11 +812,11 @@ function ChatBubble({ message }: { message: ChatMessage }) {
     default:
       return null;
   }
-}
+});
 
 // ── Tool Call Card ──────────────────────────────────────────
 
-function ToolCallCard({ tool }: { tool: ToolCallMessage }) {
+const ToolCallCard = React.memo(function ToolCallCard({ tool }: { tool: ToolCallMessage }) {
   const [expanded, setExpanded] = useState(false);
 
   const statusCls =
@@ -812,7 +872,7 @@ function ToolCallCard({ tool }: { tool: ToolCallMessage }) {
       </div>
     </div>
   );
-}
+});
 
 function formatJson(raw?: string): string {
   if (!raw) return "";
@@ -821,7 +881,7 @@ function formatJson(raw?: string): string {
 
 // ── Thinking Indicator ──────────────────────────────────────
 
-function ThinkingIndicator() {
+const ThinkingIndicator = React.memo(function ThinkingIndicator() {
   return (
     <div className={css.messageEnter} style={s.thinkingRow}>
       <div style={s.thinkingBubble}>
@@ -834,19 +894,20 @@ function ThinkingIndicator() {
       </div>
     </div>
   );
-}
+});
 
 // ── System Message Card ─────────────────────────────────────
 
-function SystemCard({ message }: { message: SystemMessage }) {
-  const icon = message.icon === "model" ? "⟳" : message.icon === "router" ? "◈" : "ℹ";
+const SystemCard = React.memo(function SystemCard({ message }: { message: SystemMessage }) {
+  const icon = message.icon === "model" ? "⟳" : message.icon === "router" ? "◈" : message.icon === "error" ? "⚠" : "ℹ";
+  const isError = message.icon === "error";
   return (
-    <div className={css.messageEnter} style={s.systemRow}>
-      <span style={s.systemIcon}>{icon}</span>
+    <div className={css.messageEnter} style={{ ...s.systemRow, ...(isError ? { borderColor: "var(--error)", background: "rgba(239, 68, 68, 0.08)" } : {}) }}>
+      <span style={{ ...s.systemIcon, ...(isError ? { color: "var(--error)" } : {}) }}>{icon}</span>
       <span style={s.systemText}>{message.content}</span>
     </div>
   );
-}
+});
 
 // ── Empty State ─────────────────────────────────────────────
 

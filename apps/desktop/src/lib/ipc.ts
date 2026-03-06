@@ -131,6 +131,31 @@ export async function getLastAssistantText(): Promise<void> {
   await invoke("get_last_assistant_text");
 }
 
+// ── Orchestrator Config ──────────────────────────────────
+
+export interface OrchestratorConfig {
+  reviewMode: "fresh_session" | "compact";
+  maxReviewIterations: number;
+  qaCommands: string[];
+  clarifyTimeoutSecs: number;
+  lockModelDuringOrchestration: boolean;
+}
+
+/** Read orchestrator config from .tide/orchestrator-config.json. */
+export async function readOrchestratorConfig(): Promise<OrchestratorConfig> {
+  return invoke<OrchestratorConfig>("read_orchestrator_config");
+}
+
+/** Write orchestrator config to .tide/orchestrator-config.json. */
+export async function writeOrchestratorConfig(config: OrchestratorConfig): Promise<void> {
+  await invoke("write_orchestrator_config", { config });
+}
+
+/** Read router config from .tide/router-config.json. */
+export async function readRouterConfig(): Promise<{ enabled: boolean; autoSwitch: boolean }> {
+  return invoke("read_router_config");
+}
+
 /** Write router config to .tide/router-config.json. */
 export async function writeRouterConfig(autoSwitch: boolean): Promise<void> {
   await invoke("write_router_config", { enabled: true, autoSwitch });
@@ -183,6 +208,20 @@ export async function respondUiRequest(
   response: Record<string, unknown>,
 ): Promise<void> {
   await invoke("respond_ui_request", { requestId, response });
+}
+
+// ── Skills Discovery ──────────────────────────────────────
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  path: string;
+  source: string;
+}
+
+/** List discovered Pi skills from all standard locations. */
+export async function listSkills(): Promise<SkillInfo[]> {
+  return invoke<SkillInfo[]>("list_skills");
 }
 
 // ── Native FS Commands ─────────────────────────────────────

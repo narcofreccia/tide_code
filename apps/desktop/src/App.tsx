@@ -21,7 +21,8 @@ import { CostIndicator } from "./components/StatusBar/CostIndicator";
 import { ContextInspector } from "./components/ContextInspector/ContextInspector";
 import { ApprovalDialog } from "./components/Approval/ApprovalDialog";
 import { CommandPalette } from "./components/CommandPalette/CommandPalette";
-import { SettingsModal } from "./components/Settings/SettingsModal";
+import { SettingsPanel } from "./components/Settings/SettingsModal";
+import { SETTINGS_TAB_PATH } from "./stores/settingsStore";
 import { AppBar } from "./components/AppBar/AppBar";
 import { SearchPanel } from "./components/SearchPanel/SearchPanel";
 import { TerminalPanel } from "./components/Terminal/TerminalPanel";
@@ -32,6 +33,7 @@ import { usePermissionStore } from "./stores/permissionStore";
 import { useIndexStore } from "./stores/indexStore";
 import { initOrchestrationListener } from "./stores/orchestrationStore";
 import { listen } from "@tauri-apps/api/event";
+import { checkForUpdates } from "./lib/updater";
 import "./styles/global.css";
 
 interface RawFsEntry {
@@ -65,6 +67,8 @@ export function App() {
     initApprovalListener();
     initOrchestrationListener();
     usePermissionStore.getState().load();
+    useSettingsStore.getState().load();
+    checkForUpdates();
 
     // Subscribe to all Pi events and forward to stream store
     const eventCleanup = onPiEvent((event) => {
@@ -278,6 +282,9 @@ export function App() {
         useStreamStore.setState({ sessionId: "", sessionName: "", sessionDir: "", sessionStatus: "idle", hasAutoTitled: false });
         // Restart Pi so its CWD matches the new workspace
         await restartPi();
+        // Reload workspace-scoped data (permissions, settings)
+        usePermissionStore.getState().load();
+        useSettingsStore.getState().load();
       } finally {
         stopLoading();
       }
@@ -292,11 +299,15 @@ export function App() {
 
   const activeTab = openTabs.find((t) => t.path === activeTabPath);
 
+  const isSettingsActive = activeTabPath === SETTINGS_TAB_PATH;
+
   const editorContent = (
     <div style={s.editorArea}>
       <EditorTabs />
       <div style={s.editorContent}>
-        {activeTab ? (
+        {isSettingsActive ? (
+          <SettingsPanel />
+        ) : activeTab ? (
           <MonacoEditor
             content={activeTab.content}
             language={activeTab.language}
@@ -414,7 +425,6 @@ export function App() {
 
       {/* Overlays */}
       <CommandPalette />
-      <SettingsModal />
       <ContextInspector />
       <ApprovalDialog />
     </div>

@@ -14,6 +14,10 @@ const PROVIDERS: ProviderConfig[] = [
   { id: "google", name: "Google AI", placeholder: "AIza..." },
 ];
 
+const SERVICES: ProviderConfig[] = [
+  { id: "tavily", name: "Tavily (Web Search)", placeholder: "tvly-..." },
+];
+
 export function ProviderSettings() {
   const [keyStatus, setKeyStatus] = useState<Record<string, boolean>>({});
   const [editing, setEditing] = useState<string | null>(null);
@@ -22,13 +26,15 @@ export function ProviderSettings() {
   const [needsRestart, setNeedsRestart] = useState(false);
   const [restarting, setRestarting] = useState(false);
 
+  const allKeys = [...PROVIDERS, ...SERVICES];
+
   useEffect(() => {
     checkAllKeys();
   }, []);
 
   const checkAllKeys = async () => {
     const status: Record<string, boolean> = {};
-    for (const p of PROVIDERS) {
+    for (const p of allKeys) {
       try {
         status[p.id] = await keychainHasKey(p.id);
       } catch {
@@ -81,6 +87,74 @@ export function ProviderSettings() {
     setKeyInput("");
   };
 
+  const renderKeyCard = (item: ProviderConfig) => (
+    <div key={item.id} style={s.card}>
+      <div style={s.cardHeader}>
+        <span style={s.providerName}>{item.name}</span>
+        <span
+          style={{
+            ...s.badge,
+            background: keyStatus[item.id]
+              ? "var(--success)"
+              : "var(--bg-tertiary)",
+            color: keyStatus[item.id]
+              ? "white"
+              : "var(--text-secondary)",
+          }}
+        >
+          {keyStatus[item.id] ? "Configured" : "Not set"}
+        </span>
+      </div>
+
+      {editing === item.id ? (
+        <div style={s.editRow}>
+          <input
+            style={s.input}
+            type="password"
+            placeholder={item.placeholder}
+            value={keyInput}
+            onChange={(e) => setKeyInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleSave(item.id);
+              if (e.key === "Escape") handleCancel();
+            }}
+            autoFocus
+          />
+          <button
+            style={s.saveBtn}
+            onClick={() => handleSave(item.id)}
+            disabled={saving || !keyInput.trim()}
+          >
+            Save
+          </button>
+          <button style={s.cancelBtn} onClick={handleCancel}>
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <div style={s.actionRow}>
+          <button
+            style={s.actionBtn}
+            onClick={() => {
+              setEditing(item.id);
+              setKeyInput("");
+            }}
+          >
+            {keyStatus[item.id] ? "Update" : "Add Key"}
+          </button>
+          {keyStatus[item.id] && (
+            <button
+              style={s.deleteBtn}
+              onClick={() => handleDelete(item.id)}
+            >
+              Remove
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div>
       <h3 style={s.heading}>API Keys</h3>
@@ -103,73 +177,15 @@ export function ProviderSettings() {
       )}
 
       <div style={s.list}>
-        {PROVIDERS.map((provider) => (
-          <div key={provider.id} style={s.card}>
-            <div style={s.cardHeader}>
-              <span style={s.providerName}>{provider.name}</span>
-              <span
-                style={{
-                  ...s.badge,
-                  background: keyStatus[provider.id]
-                    ? "var(--success)"
-                    : "var(--bg-tertiary)",
-                  color: keyStatus[provider.id]
-                    ? "white"
-                    : "var(--text-secondary)",
-                }}
-              >
-                {keyStatus[provider.id] ? "Configured" : "Not set"}
-              </span>
-            </div>
+        {PROVIDERS.map((provider) => renderKeyCard(provider))}
+      </div>
 
-            {editing === provider.id ? (
-              <div style={s.editRow}>
-                <input
-                  style={s.input}
-                  type="password"
-                  placeholder={provider.placeholder}
-                  value={keyInput}
-                  onChange={(e) => setKeyInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") handleSave(provider.id);
-                    if (e.key === "Escape") handleCancel();
-                  }}
-                  autoFocus
-                />
-                <button
-                  style={s.saveBtn}
-                  onClick={() => handleSave(provider.id)}
-                  disabled={saving || !keyInput.trim()}
-                >
-                  Save
-                </button>
-                <button style={s.cancelBtn} onClick={handleCancel}>
-                  Cancel
-                </button>
-              </div>
-            ) : (
-              <div style={s.actionRow}>
-                <button
-                  style={s.actionBtn}
-                  onClick={() => {
-                    setEditing(provider.id);
-                    setKeyInput("");
-                  }}
-                >
-                  {keyStatus[provider.id] ? "Update" : "Add Key"}
-                </button>
-                {keyStatus[provider.id] && (
-                  <button
-                    style={s.deleteBtn}
-                    onClick={() => handleDelete(provider.id)}
-                  >
-                    Remove
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        ))}
+      <h3 style={{ ...s.heading, marginTop: 24 }}>Services</h3>
+      <p style={s.description}>
+        Optional service keys for extended capabilities like web search.
+      </p>
+      <div style={s.list}>
+        {SERVICES.map((service) => renderKeyCard(service))}
       </div>
     </div>
   );
