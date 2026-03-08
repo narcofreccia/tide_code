@@ -1,12 +1,18 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { SearchAddon } from "@xterm/addon-search";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { listen } from "@tauri-apps/api/event";
 import { ptyAttach, ptyWrite, ptyResize } from "../../lib/ipc";
 import { emitSnippet } from "../AgentPanel/AgentPanel";
 import { useTerminalStore } from "../../stores/terminalStore";
+import { useSettingsStore } from "../../stores/settingsStore";
+import { terminalThemes, defaultTerminalTheme } from "../../lib/terminalThemes";
+import { ContextMenu, type ContextMenuItem } from "../ContextMenu/ContextMenu";
 import "@xterm/xterm/css/xterm.css";
+import styles from "./TerminalPanel.module.css";
 
 interface Props {
   ptyId: string;
@@ -17,43 +23,45 @@ export function TerminalInstance({ ptyId, visible }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const searchRef = useRef<SearchAddon | null>(null);
+
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
+    const settings = useSettingsStore.getState();
+    const theme = terminalThemes[settings.terminalTheme] ?? terminalThemes[defaultTerminalTheme];
+
     const term = new Terminal({
-      fontFamily: "\"SF Mono\", Menlo, Monaco, \"Courier New\", monospace",
+      allowProposedApi: true,
+      fontFamily: '"SF Mono", Menlo, Monaco, "Courier New", monospace',
       fontSize: 13,
       lineHeight: 1.3,
       cursorBlink: true,
-      theme: {
-        background: "#13141c",
-        foreground: "#a9b1d6",
-        cursor: "#c0caf5",
-        selectionBackground: "#2e3450",
-        black: "#15161e",
-        red: "#f7768e",
-        green: "#9ece6a",
-        yellow: "#e0af68",
-        blue: "#7aa2f7",
-        magenta: "#bb9af7",
-        cyan: "#7dcfff",
-        white: "#a9b1d6",
-        brightBlack: "#414868",
-        brightRed: "#f7768e",
-        brightGreen: "#9ece6a",
-        brightYellow: "#e0af68",
-        brightBlue: "#7aa2f7",
-        brightMagenta: "#bb9af7",
-        brightCyan: "#7dcfff",
-        brightWhite: "#c0caf5",
-      },
+      scrollback: settings.terminalScrollback,
+      theme,
     });
 
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
+
+    // Unicode 11 for emoji/CJK
+    const unicode11 = new Unicode11Addon();
+    term.loadAddon(unicode11);
+    term.unicode.activeVersion = "11";
+
+    // Search addon
+    const search = new SearchAddon();
+    term.loadAddon(search);
+    searchRef.current = search;
+
     term.open(el);
 
     termRef.current = term;
@@ -65,9 +73,12 @@ export function TerminalInstance({ ptyId, visible }: Props) {
       term.focus();
     });
 
-    // Cmd+Shift+T: tag selected terminal text → chat composer
+    // Custom key handler
     term.attachCustomKeyEventHandler((e) => {
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "t" && e.type === "keydown") {
+      if (e.type !== "keydown") return true;
+
+      // Cmd+Shift+T: tag selected terminal text → chat composer
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "t") {
         const selected = term.getSelection();
         if (selected?.trim()) {
           emitSnippet({
@@ -82,6 +93,19 @@ export function TerminalInstance({ ptyId, visible }: Props) {
         }
         return false;
       }
+
+      // Cmd+K: clear terminal
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        term.clear();
+        return false;
+      }
+
+      // Cmd+F: open search
+      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        setSearchOpen(true);
+        return false;
+      }
+
       return true;
     });
 
@@ -151,6 +175,15 @@ export function TerminalInstance({ ptyId, visible }: Props) {
     };
   }, [ptyId]);
 
+  // Sync terminal theme when settings change
+  const terminalThemeName = useSettingsStore((s) => s.terminalTheme);
+  useEffect(() => {
+    if (termRef.current) {
+      const newTheme = terminalThemes[terminalThemeName] ?? terminalThemes[defaultTerminalTheme];
+      termRef.current.options.theme = newTheme;
+    }
+  }, [terminalThemeName]);
+
   // Re-fit and focus when visibility changes
   useEffect(() => {
     if (visible && fitRef.current && termRef.current) {
@@ -161,15 +194,118 @@ export function TerminalInstance({ ptyId, visible }: Props) {
     }
   }, [visible]);
 
+  // Focus search input when search opens
+  useEffect(() => {
+    if (searchOpen) {
+      requestAnimationFrame(() => searchInputRef.current?.focus());
+    }
+  }, [searchOpen]);
+
+  // Search handlers
+  const doSearch = useCallback((direction: "next" | "prev") => {
+    if (!searchRef.current || !searchQuery) return;
+    if (direction === "next") {
+      searchRef.current.findNext(searchQuery);
+    } else {
+      searchRef.current.findPrevious(searchQuery);
+    }
+  }, [searchQuery]);
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchQuery("");
+    searchRef.current?.clearDecorations();
+    termRef.current?.focus();
+  }, []);
+
+  // Context menu handlers
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setCtxMenu({ x: e.clientX, y: e.clientY });
+  }, []);
+
+  const ctxMenuItems: ContextMenuItem[] = [
+    {
+      label: "Copy",
+      action: () => {
+        const sel = termRef.current?.getSelection();
+        if (sel) navigator.clipboard.writeText(sel);
+      },
+    },
+    {
+      label: "Paste",
+      action: async () => {
+        const text = await navigator.clipboard.readText();
+        if (text) ptyWrite(ptyId, text).catch(() => {});
+      },
+      dividerAfter: true,
+    },
+    {
+      label: "Select All",
+      action: () => termRef.current?.selectAll(),
+    },
+    {
+      label: "Clear",
+      action: () => termRef.current?.clear(),
+    },
+    {
+      label: "Find",
+      action: () => setSearchOpen(true),
+    },
+  ];
+
   return (
     <div
       ref={containerRef}
       onClick={() => termRef.current?.focus()}
+      onContextMenu={handleContextMenu}
       style={{
         width: "100%",
         height: "100%",
-        display: visible ? "block" : "none",
+        position: "relative",
       }}
-    />
+    >
+      {/* Search overlay */}
+      {searchOpen && (
+        <div className={styles.searchBar}>
+          <input
+            ref={searchInputRef}
+            className={styles.searchInput}
+            type="text"
+            placeholder="Search…"
+            value={searchQuery}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              if (e.target.value) searchRef.current?.findNext(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                doSearch(e.shiftKey ? "prev" : "next");
+              } else if (e.key === "Escape") {
+                closeSearch();
+              }
+            }}
+          />
+          <button className={styles.searchBtn} onClick={() => doSearch("prev")} title="Previous (Shift+Enter)">
+            ↑
+          </button>
+          <button className={styles.searchBtn} onClick={() => doSearch("next")} title="Next (Enter)">
+            ↓
+          </button>
+          <button className={styles.searchBtn} onClick={closeSearch} title="Close (Escape)">
+            ×
+          </button>
+        </div>
+      )}
+
+      {/* Right-click context menu */}
+      {ctxMenu && (
+        <ContextMenu
+          items={ctxMenuItems}
+          position={ctxMenu}
+          onClose={() => setCtxMenu(null)}
+        />
+      )}
+    </div>
   );
 }

@@ -36,6 +36,7 @@ import { listen } from "@tauri-apps/api/event";
 import { checkForUpdates } from "./lib/updater";
 import { Toasts } from "./components/Toasts";
 import { Dashboard, saveRecentWorkspace } from "./components/Dashboard/Dashboard";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./styles/global.css";
 
 interface RawFsEntry {
@@ -416,22 +417,30 @@ export function App() {
                         </button>
                       )}
                     </div>
-                    {sidebarPanel === "explorer" ? <FileTree /> : <SearchPanel />}
+                    {sidebarPanel === "explorer" ? (
+                      <ErrorBoundary fallbackLabel="File Explorer">
+                        <FileTree />
+                      </ErrorBoundary>
+                    ) : (
+                      <ErrorBoundary fallbackLabel="Search">
+                        <SearchPanel />
+                      </ErrorBoundary>
+                    )}
                   </div>
                 </div>
               </div>
 
               {/* Editor + Terminal + Agent Panel */}
               <SplitPane direction="vertical" initialSize={350} minSize={250} maxSize={600} side="end">
-                {editorWithTerminal}
-                <AgentPanel />
+                <ErrorBoundary fallbackLabel="Editor">{editorWithTerminal}</ErrorBoundary>
+                <ErrorBoundary fallbackLabel="Agent Panel"><AgentPanel /></ErrorBoundary>
               </SplitPane>
             </SplitPane>
           ) : (
             /* Editor + Terminal | Agent Panel (no file tree) */
             <SplitPane direction="vertical" initialSize={350} minSize={250} maxSize={600} side="end">
-              {editorWithTerminal}
-              <AgentPanel />
+              <ErrorBoundary fallbackLabel="Editor">{editorWithTerminal}</ErrorBoundary>
+              <ErrorBoundary fallbackLabel="Agent Panel"><AgentPanel /></ErrorBoundary>
             </SplitPane>
           )
         ) : (

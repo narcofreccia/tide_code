@@ -1,11 +1,17 @@
 import { useEffect, useState } from "react";
 import { installCli, getVersionInfo, type VersionInfo } from "../../lib/ipc";
+import { useSettingsStore } from "../../stores/settingsStore";
+import { terminalThemes } from "../../lib/terminalThemes";
 
 export function GeneralSettings() {
   const [cliStatus, setCliStatus] = useState<string | null>(null);
   const [cliError, setCliError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
   const [versions, setVersions] = useState<VersionInfo | null>(null);
+  const terminalTheme = useSettingsStore((s) => s.terminalTheme);
+  const terminalScrollback = useSettingsStore((s) => s.terminalScrollback);
+  const setTerminalTheme = useSettingsStore((s) => s.setTerminalTheme);
+  const setTerminalScrollback = useSettingsStore((s) => s.setTerminalScrollback);
 
   useEffect(() => {
     getVersionInfo().then(setVersions).catch(() => {});
@@ -61,6 +67,37 @@ export function GeneralSettings() {
         </button>
         {cliStatus && <p style={s.success}>{cliStatus}</p>}
         {cliError && <pre style={s.error}>{cliError}</pre>}
+      </div>
+
+      <div style={s.section}>
+        <h3 style={s.sectionTitle}>Terminal</h3>
+        <div style={s.settingRow}>
+          <label style={s.settingLabel}>Theme</label>
+          <select
+            style={s.select}
+            value={terminalTheme}
+            onChange={(e) => setTerminalTheme(e.target.value)}
+          >
+            {Object.keys(terminalThemes).map((name) => (
+              <option key={name} value={name}>{name}</option>
+            ))}
+          </select>
+        </div>
+        <div style={s.settingRow}>
+          <label style={s.settingLabel}>Scrollback lines</label>
+          <input
+            style={s.numberInput}
+            type="number"
+            min={500}
+            max={50000}
+            step={500}
+            value={terminalScrollback}
+            onChange={(e) => setTerminalScrollback(parseInt(e.target.value) || 5000)}
+          />
+        </div>
+        <p style={s.description}>
+          Scrollback changes apply to new terminal tabs.
+        </p>
       </div>
     </div>
   );
@@ -139,5 +176,36 @@ const s: Record<string, React.CSSProperties> = {
     borderRadius: 6,
     whiteSpace: "pre-wrap",
     fontFamily: "var(--font-mono)",
+  },
+  settingRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: "8px 0",
+    borderBottom: "1px solid var(--border)",
+  },
+  settingLabel: {
+    fontSize: "var(--font-size-sm)",
+    color: "var(--text-secondary)",
+  },
+  select: {
+    padding: "4px 8px",
+    fontSize: "var(--font-size-sm)",
+    color: "var(--text-primary)",
+    background: "var(--bg-tertiary)",
+    border: "1px solid var(--border)",
+    borderRadius: 4,
+    fontFamily: "var(--font-ui)",
+  },
+  numberInput: {
+    width: 80,
+    padding: "4px 8px",
+    fontSize: "var(--font-size-sm)",
+    color: "var(--text-primary)",
+    background: "var(--bg-tertiary)",
+    border: "1px solid var(--border)",
+    borderRadius: 4,
+    fontFamily: "var(--font-mono)",
+    textAlign: "right" as const,
   },
 };

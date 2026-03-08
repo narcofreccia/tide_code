@@ -34,6 +34,8 @@ interface SettingsState {
     complex?: TierModelConfig;
   };
   orchestratorConfig: OrchestratorConfig;
+  terminalTheme: string;
+  terminalScrollback: number;
 
   load: () => Promise<void>;
   open: (section?: SettingsSection) => void;
@@ -42,6 +44,8 @@ interface SettingsState {
   setAutoMode: (mode: boolean) => void;
   setTierModel: (tier: "quick" | "standard" | "complex", model: TierModelConfig | undefined) => void;
   updateOrchestratorConfig: (partial: Partial<OrchestratorConfig>) => void;
+  setTerminalTheme: (theme: string) => void;
+  setTerminalScrollback: (size: number) => void;
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
@@ -49,6 +53,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   autoMode: true,
   tierModels: {},
   orchestratorConfig: { ...DEFAULT_ORC_CONFIG },
+  terminalTheme: "Tokyo Night",
+  terminalScrollback: 5000,
 
   load: async () => {
     try {
@@ -106,4 +112,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       console.error("Failed to write orchestrator config:", e),
     );
   },
+  setTerminalTheme: (theme) => set({ terminalTheme: theme }),
+  setTerminalScrollback: (size) => set({ terminalScrollback: Math.max(500, Math.min(50000, size)) }),
 }));

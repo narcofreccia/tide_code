@@ -2,10 +2,11 @@ import { useCallback, useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { useWorkspaceStore, type FsEntry } from "../../stores/workspace";
-import { fsCreateFile, fsCreateDir, fsRename, fsDelete } from "../../lib/ipc";
+import { fsCreateFile, fsCreateDir, fsRename, fsDelete, ptyCreate } from "../../lib/ipc";
 import { ContextMenu, type ContextMenuItem } from "../ContextMenu/ContextMenu";
 import { FileIcon } from "./FileIcon";
 import { showError } from "../../stores/toastStore";
+import { useTerminalStore } from "../../stores/terminalStore";
 import styles from "./FileTree.module.css";
 
 interface RawFsEntry {
@@ -309,6 +310,18 @@ export function FileTree() {
           window.dispatchEvent(
             new CustomEvent("tree-create", { detail: { path: entry.path, type: "dir" } }),
           );
+        },
+      });
+      items.push({
+        label: "Open Terminal Here",
+        action: async () => {
+          try {
+            const ptyId = await ptyCreate(entry.path);
+            useTerminalStore.getState().addTab(ptyId);
+            useTerminalStore.getState().setVisible(true);
+          } catch (err) {
+            showError(`Failed to open terminal: ${err}`);
+          }
         },
         dividerAfter: true,
       });
