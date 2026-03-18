@@ -28,6 +28,11 @@ export async function cancelOrchestration(): Promise<void> {
   await invoke("cancel_orchestration");
 }
 
+/** Confirm plan execution after PlanReady phase. */
+export async function confirmPlanExecution(): Promise<void> {
+  await invoke("confirm_plan_execution");
+}
+
 /** Steer: redirect the agent mid-run with new instructions (after current tool finishes). */
 export async function steerAgent(message: string): Promise<void> {
   await invoke("steer_agent", { message });
@@ -106,9 +111,15 @@ export async function deleteSession(sessionFile: string, isActive = false): Prom
   await invoke("delete_session", { sessionFile, isActive });
 }
 
-/** Fork the current session from this point. */
-export async function forkSession(): Promise<void> {
-  await invoke("fork_session");
+/** Get user messages available for forking. */
+export async function getForkMessages(): Promise<{ entryId: string; text: string }[]> {
+  const res = await invoke<{ success: boolean; data?: { messages?: { entryId: string; text: string }[] } }>("get_fork_messages");
+  return res?.data?.messages ?? [];
+}
+
+/** Fork the current session from a specific user message. */
+export async function forkSession(entryId: string): Promise<void> {
+  await invoke("fork_session", { entryId });
 }
 
 /** Set a human-readable session name. */
@@ -129,6 +140,34 @@ export async function getSessionStats(): Promise<void> {
 /** Get conversation messages from Pi. Response arrives as pi_event. */
 export async function getMessages(): Promise<void> {
   await invoke("get_messages");
+}
+
+// ── Context Management ───────────────────────────────────────
+
+export interface ContextBreakdownSnapshot {
+  categories: { category: string; tokens: number; percentage: number }[];
+  totalTokens: number;
+  timestamp?: string;
+}
+
+/** Get context category breakdown from snapshot file. */
+export async function getContextBreakdown(): Promise<ContextBreakdownSnapshot> {
+  return invoke<ContextBreakdownSnapshot>("get_context_breakdown");
+}
+
+/** Exclude a message from AI context by its ID. */
+export async function excludeContextMessage(messageId: string): Promise<void> {
+  await invoke("exclude_context_message", { messageId });
+}
+
+/** Re-include a previously excluded message. */
+export async function includeContextMessage(messageId: string): Promise<void> {
+  await invoke("include_context_message", { messageId });
+}
+
+/** Get list of currently excluded message IDs. */
+export async function getContextExclusions(): Promise<string[]> {
+  return invoke<string[]>("get_context_exclusions");
 }
 
 /** Get last assistant response text. Response arrives as pi_event. */

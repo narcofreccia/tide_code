@@ -1,4 +1,4 @@
-import { useRef, useCallback, useState } from "react";
+import { useRef, useCallback, useState, useEffect } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
 import { useRegionTags } from "./useRegionTags";
@@ -20,7 +20,22 @@ export function MonacoEditor({
 }: MonacoEditorProps) {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const [editorReady, setEditorReady] = useState<editor.IStandaloneCodeEditor | null>(null);
+  const isExternalUpdate = useRef(false);
   useRegionTags(editorReady, path);
+
+  // Sync editor content when file is reloaded from disk (e.g. after agent changes)
+  useEffect(() => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    const model = ed.getModel();
+    if (!model) return;
+    const currentValue = model.getValue();
+    if (currentValue !== content) {
+      isExternalUpdate.current = true;
+      model.setValue(content);
+      isExternalUpdate.current = false;
+    }
+  }, [content]);
 
   const handleMount: OnMount = useCallback((editor, monaco) => {
     editorRef.current = editor;
@@ -81,6 +96,8 @@ export function MonacoEditor({
 
   const handleChange = useCallback(
     (value: string | undefined) => {
+      // Skip onChange when content was set externally (e.g. agent file reload)
+      if (isExternalUpdate.current) return;
       if (value !== undefined && onChange) {
         onChange(value);
       }

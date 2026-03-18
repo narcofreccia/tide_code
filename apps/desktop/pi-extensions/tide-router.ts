@@ -15,7 +15,8 @@ function log(msg: string) {
 // ── Model Pattern Matching ──────────────────────────────────
 
 const QUICK_MODEL_PATTERNS = ["flash", "4o-mini", "haiku", "lite", "instant"];
-const COMPLEX_MODEL_PATTERNS = ["opus", "o1-pro", "o3-pro", "5.3-codex", "5-codex", "gpt-5"];
+// Order matters: strongest coding models first (Codex > Opus > reasoning > base)
+const COMPLEX_MODEL_PATTERNS = ["5.3-codex", "5.2-codex", "5-codex", "codex", "opus", "o3-pro", "o1-pro", "gpt-5"];
 const EXCLUDED_MODEL_PATTERNS = ["codex-mini", "embedding", "tts", "whisper", "dall-e", "moderation"];
 
 // ── Router Config ───────────────────────────────────────────
@@ -163,6 +164,12 @@ export default function tideRouter(pi: ExtensionAPI) {
       const complex = chatModels.filter((m) =>
         COMPLEX_MODEL_PATTERNS.some((p) => m.id.toLowerCase().includes(p)),
       );
+      // Sort complex models by pattern priority (earlier in COMPLEX_MODEL_PATTERNS = higher priority)
+      complex.sort((a, b) => {
+        const aIdx = COMPLEX_MODEL_PATTERNS.findIndex((p) => a.id.toLowerCase().includes(p));
+        const bIdx = COMPLEX_MODEL_PATTERNS.findIndex((p) => b.id.toLowerCase().includes(p));
+        return aIdx - bIdx;
+      });
       const standard = chatModels.filter((m) => {
         const lower = m.id.toLowerCase();
         return !QUICK_MODEL_PATTERNS.some((p) => lower.includes(p))

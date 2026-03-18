@@ -1,15 +1,16 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, Suspense, lazy, useMemo } from "react";
 import { useStreamStore, type ChatMessage, type ToolCallMessage, type SystemMessage, type PiCommand } from "../../stores/stream";
-import { sendPrompt, abortAgent, steerAgent, followUp, newSession, listSessions, switchSession, deleteSession, getPiState, orchestrate, forkSession, getCommands, type SessionInfo } from "../../lib/ipc";
-import { LogsTab } from "./LogsTab";
-import { PlanTab } from "./PlanTab";
-import { SessionHistoryTab } from "./SessionHistoryTab";
+import { sendPrompt, abortAgent, steerAgent, followUp, newSession, listSessions, switchSession, deleteSession, getPiState, orchestrate, forkSession, getForkMessages, getCommands, type SessionInfo } from "../../lib/ipc";
+const LogsTab = lazy(() => import("./LogsTab").then(m => ({ default: m.LogsTab })));
+const PlanTab = lazy(() => import("./PlanTab").then(m => ({ default: m.PlanTab })));
+const SessionHistoryTab = lazy(() => import("./SessionHistoryTab").then(m => ({ default: m.SessionHistoryTab })));
 import { MessageRenderer } from "./MessageRenderer";
 import { ClarifyCard } from "./ClarifyCard";
 import { PipelineProgress } from "./PipelineProgress";
 import { ChangesetViewer } from "./ChangesetViewer";
 import { useApprovalStore } from "../../stores/approvalStore";
 import { useOrchestrationStore, isOrchestrationStalled } from "../../stores/orchestrationStore";
+import { ContextWarning } from "../ContextWarning/ContextWarning";
 import css from "./AgentPanel.module.css";
 
 type TabId = "chat" | "logs" | "plan" | "history";
@@ -381,6 +382,7 @@ export function AgentPanel() {
   const [isDragging, setIsDragging] = useState(false);
   const [showSessions, setShowSessions] = useState(false);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const sessionsFetchedAt = useRef(0);
   const snippetsRef = useRef<Map<string, { label: string; code: string; lang: string }>>(new Map());
   const { messages, isStreaming, isCompacting, isRetrying, sessionStatus, addUserMessage } = useStreamStore();
   const clarifyQuestions = useApprovalStore((s) => s.clarifyQuestions);
@@ -677,10 +679,14 @@ export function AgentPanel() {
                   setShowSessions(false);
                 } else {
                   try {
-                    const sessionDir = useStreamStore.getState().sessionDir;
-                    const sessionId = useStreamStore.getState().sessionId;
-                    const result = await listSessions(sessionDir || undefined);
-                    setSessions(result);
+                    const now = Date.now();
+                    // Cache session list for 5s to avoid re-fetching on repeated opens
+                    if (sessions.length === 0 || now - sessionsFetchedAt.current > 5000) {
+                      const sessionDir = useStreamStore.getState().sessionDir;
+                      const result = await listSessions(sessionDir || undefined);
+                      setSessions(result);
+                      sessionsFetchedAt.current = now;
+                    }
                   } catch (e) { console.error("[Tide:sessions] listSessions error:", e); setSessions([]); }
                   setShowSessions(true);
                 }
@@ -727,6 +733,7 @@ export function AgentPanel() {
               const sessionDir = useStreamStore.getState().sessionDir;
               const remaining = await listSessions(sessionDir || undefined);
               setSessions(remaining);
+              sessionsFetchedAt.current = Date.now();
               if (isActive) {
                 // If other sessions exist, switch to the most recent one;
                 // otherwise deleteSession already created a fresh session.
@@ -748,14 +755,39 @@ export function AgentPanel() {
           {orcPhase !== "idle" && <PipelineProgress />}
           <div ref={scrollRef} className={css.chatScroll} onScroll={handleChatScroll}>
             {sessionStatus === "loading" ? (
-              <div style={s.sessionLoading}>Loading session...</div>
+              <div style={s.sessionLoading}>
+                <div className={css.shimmerLine} />
+                <div className={css.shimmerLine} style={{ width: "60%" }} />
+                <div className={css.shimmerLine} style={{ width: "80%" }} />
+              </div>
             ) : messages.length === 0 ? (
               <EmptyState />
             ) : (
               <div style={s.messageList}>
-                {messages.map((msg) => (
-                  <ChatBubble key={msg.id} message={msg} />
-                ))}
+                {(() => {
+                  // Group consecutive tool_call messages for collapsed display
+                  const elements: React.ReactNode[] = [];
+                  let i = 0;
+                  while (i < messages.length) {
+                    const msg = messages[i];
+                    if (msg.role === "tool_call") {
+                      // Collect consecutive tool calls
+                      const group: ToolCallMessage[] = [];
+                      while (i < messages.length && messages[i].role === "tool_call") {
+                        group.push(messages[i] as ToolCallMessage);
+                        i++;
+                      }
+                      elements.push(<ToolCallGroup key={group[0].id} tools={group} />);
+                    } else {
+                      const nextUserMsgIndex = msg.role === "assistant"
+                        ? messages.slice(0, i + 1).filter(m => m.role === "user").length
+                        : -1;
+                      elements.push(<ChatBubble key={msg.id} message={msg} userMessageIndex={nextUserMsgIndex} />);
+                      i++;
+                    }
+                  }
+                  return elements;
+                })()}
                 {clarifyQuestions && clarifyInputRequestId && (
                   <ClarifyCard questions={clarifyQuestions} />
                 )}
@@ -772,6 +804,9 @@ export function AgentPanel() {
               {isStalled && <span style={s.statusItem}>Orchestration may be stalled — no heartbeat received</span>}
             </div>
           )}
+
+          {/* Context Warning */}
+          <ContextWarning />
 
           {/* Composer */}
           <div
@@ -807,6 +842,9 @@ export function AgentPanel() {
                   className={css.composerField}
                   contentEditable
                   role="textbox"
+                  spellCheck={false}
+                  autoCorrect="off"
+                  autoCapitalize="off"
                   data-placeholder={isStreaming ? "Steer agent... (Enter to redirect)" : "Message Tide... (Enter to send, / for commands)"}
                   onKeyDown={handleKeyDown}
                   onPaste={handlePaste}
@@ -844,7 +882,7 @@ export function AgentPanel() {
                 <button
                   className={css.toolbarBtn}
                   onClick={() => fileInputRef.current?.click()}
-                  title="Attach image"
+                  data-tooltip="Attach image"
                   type="button"
                 >
                   <ImageIcon />
@@ -852,7 +890,7 @@ export function AgentPanel() {
                 <button
                   className={css.toolbarBtn}
                   onClick={() => setForceOrchestrate((v) => !v)}
-                  title={forceOrchestrate ? "Orchestration ON (click to disable)" : "Force orchestration (Cmd+Enter)"}
+                  data-tooltip={forceOrchestrate ? "Orchestration ON — click to disable" : "Force orchestration (⌘+Enter)"}
                   type="button"
                   style={forceOrchestrate ? { color: "var(--accent)" } : undefined}
                 >
@@ -890,12 +928,16 @@ export function AgentPanel() {
             />
           </div>
         </>
-      ) : activeTab === "logs" ? (
-        <LogsTab />
-      ) : activeTab === "plan" ? (
-        <PlanTab />
       ) : (
-        <SessionHistoryTab />
+        <Suspense fallback={null}>
+          {activeTab === "logs" ? (
+            <LogsTab />
+          ) : activeTab === "plan" ? (
+            <PlanTab />
+          ) : (
+            <SessionHistoryTab onSessionSwitch={() => setActiveTab("chat")} />
+          )}
+        </Suspense>
       )}
     </div>
   );
@@ -912,7 +954,7 @@ const StreamingMessageRenderer = React.memo(function StreamingMessageRenderer({ 
 
   useEffect(() => {
     const now = performance.now();
-    if (now - lastUpdateRef.current >= 80) {
+    if (now - lastUpdateRef.current >= 50) {
       setRendered(content);
       lastUpdateRef.current = now;
     } else {
@@ -928,9 +970,35 @@ const StreamingMessageRenderer = React.memo(function StreamingMessageRenderer({ 
   return <MessageRenderer content={rendered} />;
 });
 
+// ── Copy button for messages ────────────────────────────────
+
+function CopyMessageButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }, [text]);
+
+  return (
+    <button style={s.copyMsgBtn} onClick={handleCopy} title="Copy message">
+      {copied ? (
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+          <path d="M3 8.5l3 3 7-7" stroke="var(--success)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      ) : (
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+          <rect x="5" y="5" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+          <path d="M3 11V3.5A.5.5 0 013.5 3H11" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
 // ── Message Bubbles ─────────────────────────────────────────
 
-const ChatBubble = React.memo(function ChatBubble({ message }: { message: ChatMessage }) {
+const ChatBubble = React.memo(function ChatBubble({ message, userMessageIndex = -1 }: { message: ChatMessage; userMessageIndex?: number }) {
   switch (message.role) {
     case "user":
       return (
@@ -949,6 +1017,9 @@ const ChatBubble = React.memo(function ChatBubble({ message }: { message: ChatMe
               <span style={s.modelBadge}>{message.modelName}</span>
             )}
             {message.streaming && <span style={s.streamingDot} />}
+            {!message.streaming && message.content && (
+              <CopyMessageButton text={message.content} />
+            )}
           </div>
           <div style={s.assistantBubble}>
             {message.streaming
@@ -973,7 +1044,22 @@ const ChatBubble = React.memo(function ChatBubble({ message }: { message: ChatMe
                 )}
                 <button
                   style={s.forkButton}
-                  onClick={() => forkSession().catch(console.error)}
+                  onClick={async () => {
+                    try {
+                      const forkMsgs = await getForkMessages();
+                      if (forkMsgs.length === 0) {
+                        console.warn("[Tide] No forkable messages available");
+                        return;
+                      }
+                      // userMessageIndex points to the next user msg after this assistant.
+                      // If it's beyond the list, fork from the last available message.
+                      const idx = Math.min(userMessageIndex, forkMsgs.length - 1);
+                      console.debug(`[Tide] Forking from entry ${idx}/${forkMsgs.length}: ${forkMsgs[idx].entryId}`);
+                      await forkSession(forkMsgs[idx].entryId);
+                    } catch (err) {
+                      console.error("[Tide] Fork failed:", err);
+                    }
+                  }}
                   title="Fork session from this point"
                 >
                   Fork
@@ -997,6 +1083,37 @@ const ChatBubble = React.memo(function ChatBubble({ message }: { message: ChatMe
       return null;
   }
 });
+
+// ── Tool Call Group (collapsed view) ────────────────────────
+
+function ToolCallGroup({ tools }: { tools: ToolCallMessage[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const running = tools.filter((t) => t.status === "running");
+  const completed = tools.filter((t) => t.status !== "running");
+  const hiddenCount = Math.max(0, completed.length - 2);
+  const visibleCompleted = expanded ? completed : completed.slice(-2);
+
+  return (
+    <>
+      {hiddenCount > 0 && (
+        <div style={s.toolGroupToggle}>
+          <button
+            style={s.toolGroupBtn}
+            onClick={() => setExpanded(!expanded)}
+          >
+            {expanded ? `Hide ${hiddenCount} tool calls` : `Show ${hiddenCount} more tool calls`}
+          </button>
+        </div>
+      )}
+      {visibleCompleted.map((t) => (
+        <ToolCallCard key={t.id} tool={t} />
+      ))}
+      {running.map((t) => (
+        <ToolCallCard key={t.id} tool={t} />
+      ))}
+    </>
+  );
+}
 
 // ── Tool Call Card ──────────────────────────────────────────
 
@@ -1229,6 +1346,19 @@ const s: Record<string, React.CSSProperties> = {
   commandEmpty: { padding: "8px 12px", fontSize: "var(--font-size-xs)", color: "var(--text-secondary)", textAlign: "center" as const },
   streamingDot: { display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", animation: "pulse 1s ease-in-out infinite" },
   toolRow: { margin: "4px 0" },
+  toolGroupToggle: { display: "flex", justifyContent: "center", margin: "2px 0" },
+  toolGroupBtn: {
+    background: "none",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-sm)",
+    color: "var(--text-secondary)",
+    fontSize: "var(--font-size-xs)",
+    fontFamily: "var(--font-ui)",
+    padding: "2px 10px",
+    cursor: "pointer",
+    opacity: 0.7,
+    transition: "opacity 0.15s",
+  },
   toolName: { fontFamily: "var(--font-mono)", fontSize: "var(--font-size-xs)", color: "var(--text-bright)", flex: 1 },
   toolDuration: { fontFamily: "var(--font-mono)", fontSize: "var(--font-size-xs)", color: "var(--text-secondary)" },
   toolChevron: { fontSize: 8, color: "var(--text-secondary)", marginLeft: 2 },
@@ -1249,7 +1379,8 @@ const s: Record<string, React.CSSProperties> = {
   systemRow: { display: "flex", alignItems: "center", gap: 6, padding: "4px 14px", margin: "2px 0" },
   systemIcon: { fontSize: 11, color: "var(--accent)", opacity: 0.7, flexShrink: 0 },
   systemText: { fontFamily: "var(--font-ui)", fontSize: "var(--font-size-xs)", color: "var(--text-secondary)", fontStyle: "italic" },
-  sessionLoading: { display: "flex", alignItems: "center", justifyContent: "center", height: "100%", fontFamily: "var(--font-ui)", fontSize: "var(--font-size-sm)", color: "var(--text-secondary)", fontStyle: "italic" },
+  sessionLoading: { display: "flex", flexDirection: "column" as const, gap: 12, padding: "40px 24px", height: "100%" },
+  copyMsgBtn: { marginLeft: "auto", display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, padding: 0, background: "transparent", border: "none", color: "var(--text-secondary)", cursor: "pointer", borderRadius: "var(--radius-sm)", opacity: 0.6, transition: "opacity 0.1s" },
   sessionConfirmOverlay: { position: "absolute" as const, inset: 0, zIndex: 2, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "var(--bg-tertiary)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" },
   sessionConfirmText: { fontFamily: "var(--font-ui)", fontSize: "var(--font-size-xs)", color: "var(--text-primary)", fontWeight: 500 },
   sessionConfirmYes: { fontFamily: "var(--font-ui)", fontSize: "var(--font-size-xs)", fontWeight: 500, color: "#fff", background: "var(--error, #f87171)", border: "none", borderRadius: "var(--radius-sm)", padding: "2px 8px", cursor: "pointer" },

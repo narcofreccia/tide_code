@@ -111,6 +111,7 @@ interface StreamState {
   piCommands: PiCommand[];
   _agentStartMsgCount: number;
   _emptyRetryCount: number;
+  _pendingForkRestore: boolean;
 
   handlePiEvent: (event: PiEvent) => void;
   addUserMessage: (content: string) => void;
@@ -175,6 +176,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   piCommands: [],
   _agentStartMsgCount: 0,
   _emptyRetryCount: 0,
+  _pendingForkRestore: false,
 
   addUserMessage: (content: string) => {
     set((state) => ({
@@ -300,10 +302,22 @@ export const useStreamStore = create<StreamState>((set, get) => ({
           _emptyRetryCount: 0,
         });
 
-        // Refresh model info + context usage + category breakdown after agent completes
+        // Refresh model info + session stats + category breakdown after agent completes
         getPiState().catch(() => {});
         getSessionStats().catch(() => {});
         useContextStore.getState().refreshCategories();
+
+        // Update context from the last assistant message's usage.input (fallback for message_end)
+        const agentMessages = (event as any).messages;
+        if (Array.isArray(agentMessages)) {
+          for (let i = agentMessages.length - 1; i >= 0; i--) {
+            if (agentMessages[i]?.role === "assistant" && agentMessages[i]?.usage?.input != null) {
+              const ctxWindow = get().contextWindow;
+              useContextStore.getState().updateFromPiState(agentMessages[i].usage.input, ctxWindow);
+              break;
+            }
+          }
+        }
 
         // Auto-compact if enabled and usage exceeds threshold
         {
@@ -550,10 +564,11 @@ export const useStreamStore = create<StreamState>((set, get) => ({
 
             set(updates);
 
-            // Update context indicator with real data
+            // Sync context window size (actual usage is updated from message_end events)
             if (updates.contextWindow) {
-              const stats = get().sessionStats;
-              useContextStore.getState().updateFromPiState(stats.totalTokens || 0, updates.contextWindow);
+              const existing = useContextStore.getState().breakdown;
+              const currentUsage = existing?.totalTokens ?? 0;
+              useContextStore.getState().updateFromPiState(currentUsage, updates.contextWindow);
             }
             break;
           }
@@ -572,12 +587,11 @@ export const useStreamStore = create<StreamState>((set, get) => ({
                 updates.contextWindow = Number(m.contextWindow);
               }
               set(updates);
-              // If contextWindow changed, recalculate context indicator immediately
+              // If contextWindow changed, recalculate with current usage (not cumulative stats)
               if (updates.contextWindow) {
-                const stats = get().sessionStats;
-                if (stats.totalTokens) {
-                  useContextStore.getState().updateFromPiState(stats.totalTokens, updates.contextWindow);
-                }
+                const existing = useContextStore.getState().breakdown;
+                const currentUsage = existing?.totalTokens ?? 0;
+                useContextStore.getState().updateFromPiState(currentUsage, updates.contextWindow);
               }
               // Insert system message in chat when model changes
               if (prevModel && prevModel !== name) {
@@ -631,9 +645,8 @@ export const useStreamStore = create<StreamState>((set, get) => ({
                 },
               });
 
-              // Update context indicator with real token data
-              const ctxWindow = get().contextWindow;
-              useContextStore.getState().updateFromPiState(totalTokens, ctxWindow);
+              // Note: totalTokens here is CUMULATIVE session total (all turns).
+              // Context indicator is updated from message_end usage.input instead.
             }
             break;
           }
@@ -663,8 +676,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
                   sessionStatus: "active",
                   sessionId: e.data?.sessionId || e.data?.sessionPath || "",
                 });
-                // Reset context indicator immediately (fresh session = 0 tokens)
-                useContextStore.getState().updateFromPiState(0, get().contextWindow);
+                // Context will update when get_messages response arrives with usage.input
                 useContextStore.setState({ warningDismissedAt: 0 });
                 getSessionStats().catch(() => {});
               }
@@ -685,8 +697,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
                 hasAutoTitled: false,
                 sessionStatus: "loading",
               });
-              // Reset context immediately; getSessionStats will correct it
-              useContextStore.getState().updateFromPiState(0, get().contextWindow);
+              // Context will update when get_messages response arrives with usage.input
               // Re-fetch messages, stats, and category breakdown for the switched session
               getMessages().catch(() => {});
               getSessionStats().catch(() => {});
@@ -705,13 +716,16 @@ export const useStreamStore = create<StreamState>((set, get) => ({
             // Restore chat history from Pi's session
             if (e.success && e.data) {
               const rawMessages = Array.isArray(e.data) ? e.data : (e.data.messages || []);
-              console.debug(`[Tide] get_messages: ${rawMessages.length} raw messages, ${get().messages.length} current messages`);
+              const forceRestore = get()._pendingForkRestore;
+              console.debug(`[Tide] get_messages: ${rawMessages.length} raw messages, ${get().messages.length} current messages, forceRestore=${forceRestore}`);
               // Only skip restoration if we already have user/assistant messages (not just system messages)
               const hasRealMessages = get().messages.some(m => m.role === "user" || m.role === "assistant");
-              if (rawMessages.length > 0 && !hasRealMessages) {
+              if (rawMessages.length > 0 && (!hasRealMessages || forceRestore)) {
                 const restored: ChatMessage[] = [];
                 for (const msg of rawMessages) {
                   const role = msg.role || msg.type;
+                  const ts = msg.timestamp ? new Date(msg.timestamp).getTime() : Date.now();
+
                   if (role === "user" && msg.content) {
                     const text = typeof msg.content === "string"
                       ? msg.content
@@ -719,12 +733,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
                         ? msg.content.filter((p: any) => p.type === "text").map((p: any) => p.text).join("")
                         : "";
                     if (text) {
-                      restored.push({
-                        role: "user",
-                        id: nextId(),
-                        content: text,
-                        timestamp: msg.timestamp ? new Date(msg.timestamp).getTime() : Date.now(),
-                      });
+                      restored.push({ role: "user", id: nextId(), content: text, timestamp: ts });
                     }
                   } else if (role === "assistant" && msg.content) {
                     const text = typeof msg.content === "string"
@@ -733,23 +742,58 @@ export const useStreamStore = create<StreamState>((set, get) => ({
                         ? msg.content.filter((p: any) => p.type === "text" || p.type === "output_text").map((p: any) => p.text).join("")
                         : "";
                     if (text) {
-                      restored.push({
-                        role: "assistant",
-                        id: nextId(),
-                        content: text,
-                        timestamp: msg.timestamp ? new Date(msg.timestamp).getTime() : Date.now(),
-                        streaming: false,
-                      });
+                      restored.push({ role: "assistant", id: nextId(), content: text, timestamp: ts, streaming: false });
+                    }
+                    // Extract tool calls from assistant content blocks
+                    if (Array.isArray(msg.content)) {
+                      for (const part of msg.content) {
+                        if (part.type === "toolCall" || part.type === "tool_use") {
+                          restored.push({
+                            role: "tool_call",
+                            id: nextId(),
+                            toolCallId: part.id || "",
+                            toolName: part.name || "unknown",
+                            status: "completed",
+                            startedAt: ts,
+                            argsJson: part.arguments ? JSON.stringify(part.arguments) : undefined,
+                          });
+                        }
+                      }
+                    }
+                  } else if (role === "toolResult" && msg.toolCallId) {
+                    // Match with existing tool call and update result
+                    for (let i = restored.length - 1; i >= 0; i--) {
+                      const r = restored[i];
+                      if (r.role === "tool_call" && (r as ToolCallMessage).toolCallId === msg.toolCallId) {
+                        const resultText = Array.isArray(msg.content)
+                          ? msg.content.filter((p: any) => p.type === "text").map((p: any) => p.text).join("")
+                          : typeof msg.content === "string" ? msg.content : "";
+                        restored[i] = {
+                          ...(r as ToolCallMessage),
+                          status: msg.isError ? "error" as const : "completed" as const,
+                          resultJson: resultText || undefined,
+                          completedAt: ts,
+                        };
+                        break;
+                      }
                     }
                   }
                 }
                 if (restored.length > 0) {
-                  console.debug(`[Tide] Restored ${restored.length} messages`);
-                  // If session already has a name, mark auto-titled to prevent re-titling
+                  console.debug(`[Tide] Restored ${restored.length} messages (including tool calls)`);
                   const alreadyNamed = !!get().sessionName;
-                  set({ messages: restored, sessionStatus: "active", hasAutoTitled: alreadyNamed });
+                  set({ messages: restored, sessionStatus: "active", hasAutoTitled: alreadyNamed, _pendingForkRestore: false });
                 } else {
-                  set({ sessionStatus: "active" });
+                  set({ sessionStatus: "active", _pendingForkRestore: false });
+                }
+
+                // Restore context usage from last assistant message's usage.input
+                for (let i = rawMessages.length - 1; i >= 0; i--) {
+                  if (rawMessages[i].role === "assistant" && rawMessages[i].usage?.input != null) {
+                    const ctxWindow = get().contextWindow;
+                    useContextStore.getState().updateFromPiState(rawMessages[i].usage.input, ctxWindow);
+                    break;
+                  }
                 }
               }
             }
@@ -787,15 +831,20 @@ export const useStreamStore = create<StreamState>((set, get) => ({
           case "fork": {
             if (e.data?.cancelled) {
               console.warn("[Tide] fork was cancelled by Pi");
+              import("./toastStore").then(({ showInfo }) => {
+                showInfo("Fork was cancelled");
+              });
               break;
             }
             if (e.success) {
-              set({
-                sessionId: e.data?.sessionId || e.data?.sessionPath || "",
-                sessionName: e.data?.sessionName || "",
-              });
+              // Fork creates a branch within the same session — don't change sessionId/sessionName
+              set({ messages: [], hasAutoTitled: false, _pendingForkRestore: true });
+              console.debug("[Tide] Fork succeeded, requesting messages for forked session");
               getMessages().catch(() => {});
               getSessionStats().catch(() => {});
+              import("./toastStore").then(({ showSuccess }) => {
+                showSuccess("Session forked");
+              });
             }
             break;
           }
@@ -950,6 +999,13 @@ export const useStreamStore = create<StreamState>((set, get) => ({
             });
           }
         }
+
+        // Update context indicator from the assistant message's actual input token usage.
+        // usage.input = tokens sent to the model = current context window occupancy.
+        if (endMsg?.usage?.input != null) {
+          const ctxWindow = get().contextWindow;
+          useContextStore.getState().updateFromPiState(endMsg.usage.input, ctxWindow);
+        }
         break;
       }
 
@@ -1031,12 +1087,11 @@ export const useStreamStore = create<StreamState>((set, get) => ({
               ],
             }));
           }
-          // Update context indicator
+          // Update context window size (usage comes from message_end events)
           if (updates.contextWindow) {
-            const stats = get().sessionStats;
-            if (stats.totalTokens) {
-              useContextStore.getState().updateFromPiState(stats.totalTokens, updates.contextWindow);
-            }
+            const existing = useContextStore.getState().breakdown;
+            const currentUsage = existing?.totalTokens ?? 0;
+            useContextStore.getState().updateFromPiState(currentUsage, updates.contextWindow);
           }
           // Fix 3: Proactively refresh full state to ensure contextWindow is synced
           getPiState().catch(() => {});

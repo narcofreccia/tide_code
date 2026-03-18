@@ -4,13 +4,17 @@ import { useRegionTagStore } from "../../stores/regionTagStore";
 import { useStreamStore } from "../../stores/stream";
 import { compactContext, newSession } from "../../lib/ipc";
 import type { RegionTag } from "@tide/shared";
+import { CategoryBar } from "./CategoryBar";
+import { MessageList } from "./MessageList";
 
+type TabId = "overview" | "messages" | "tags";
 type FilterType = "all" | "pinned" | "unpinned";
 
 export function ContextInspector() {
-  const { inspectorOpen, closeInspector, breakdown } = useContextStore();
+  const { inspectorOpen, closeInspector, breakdown, refreshCategories } = useContextStore();
   const { tags, loadAllTags, togglePin, deleteTag } = useRegionTagStore();
   const isCompacting = useStreamStore((s) => s.isCompacting);
+  const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [filter, setFilter] = useState<FilterType>("all");
   const [search, setSearch] = useState("");
   const [confirmingNewSession, setConfirmingNewSession] = useState(false);
@@ -18,10 +22,11 @@ export function ContextInspector() {
   useEffect(() => {
     if (inspectorOpen) {
       loadAllTags();
+      refreshCategories();
     } else {
       setConfirmingNewSession(false);
     }
-  }, [inspectorOpen, loadAllTags]);
+  }, [inspectorOpen, loadAllTags, refreshCategories]);
 
   const allTags = useMemo(() => Array.from(tags.values()), [tags]);
 
@@ -57,9 +62,12 @@ export function ContextInspector() {
 
   if (!inspectorOpen) return null;
 
+  const { autoCompactEnabled, autoCompactThreshold, setAutoCompact } = useContextStore.getState();
+
   return (
     <div style={s.overlay} onClick={closeInspector}>
       <div style={s.panel} onClick={(e) => e.stopPropagation()}>
+        {/* Header */}
         <div style={s.header}>
           <span style={s.title}>Context Inspector</span>
           <button style={s.closeBtn} onClick={closeInspector} type="button">
@@ -67,23 +75,112 @@ export function ContextInspector() {
           </button>
         </div>
 
-        {/* Summary */}
-        <div style={s.summary}>
-          <span>{allTags.length} tag{allTags.length !== 1 ? "s" : ""}{pinnedCount > 0 ? ` (${pinnedCount} pinned)` : ""}</span>
-          {breakdown && (
-            <span style={{ color: breakdown.usagePercent > 0.85 ? "var(--error)" : "var(--text-secondary)" }}>
-              {breakdown.totalTokens.toLocaleString()} / {breakdown.budgetTokens.toLocaleString()} tokens ({Math.round(breakdown.usagePercent * 100)}%)
-            </span>
+        {/* Tab Bar */}
+        <div style={s.tabBar}>
+          {(["overview", "messages", "tags"] as TabId[]).map((tab) => (
+            <button
+              key={tab}
+              style={{
+                ...s.tab,
+                borderBottomColor: activeTab === tab ? "var(--accent)" : "transparent",
+                color: activeTab === tab ? "var(--text-bright)" : "var(--text-secondary)",
+              }}
+              onClick={() => setActiveTab(tab)}
+              type="button"
+            >
+              {tab === "overview" ? "Overview" : tab === "messages" ? "Messages" : `Tags (${allTags.length})`}
+            </button>
+          ))}
+        </div>
+
+        {/* Tab Content */}
+        <div style={s.tabContent}>
+          {activeTab === "overview" && (
+            <OverviewTab
+              breakdown={breakdown}
+              isCompacting={isCompacting}
+              confirmingNewSession={confirmingNewSession}
+              setConfirmingNewSession={setConfirmingNewSession}
+              closeInspector={closeInspector}
+              autoCompactEnabled={autoCompactEnabled}
+              autoCompactThreshold={autoCompactThreshold}
+              setAutoCompact={setAutoCompact}
+            />
+          )}
+
+          {activeTab === "messages" && <MessageList />}
+
+          {activeTab === "tags" && (
+            <TagsTab
+              allTags={allTags}
+              filteredTags={filteredTags}
+              pinnedCount={pinnedCount}
+              filter={filter}
+              setFilter={setFilter}
+              search={search}
+              setSearch={setSearch}
+              togglePin={togglePin}
+              deleteTag={deleteTag}
+            />
           )}
         </div>
+      </div>
+    </div>
+  );
+}
 
-        {/* Info */}
-        <div style={s.info}>
-          Select text in the editor and press <strong>Cmd+Shift+T</strong> to tag a code region.
-          Pin a tag to auto-inject it into the agent's system prompt.
+// ── Overview Tab ──────────────────────────────────────────────
+
+function OverviewTab({
+  breakdown,
+  isCompacting,
+  confirmingNewSession,
+  setConfirmingNewSession,
+  closeInspector,
+  autoCompactEnabled,
+  autoCompactThreshold,
+  setAutoCompact,
+}: {
+  breakdown: ReturnType<typeof useContextStore.getState>["breakdown"];
+  isCompacting: boolean;
+  confirmingNewSession: boolean;
+  setConfirmingNewSession: (v: boolean) => void;
+  closeInspector: () => void;
+  autoCompactEnabled: boolean;
+  autoCompactThreshold: number;
+  setAutoCompact: (enabled: boolean, threshold?: number) => void;
+}) {
+  return (
+    <div style={s.overviewContent}>
+      {/* Usage summary */}
+      {breakdown && (
+        <div style={s.usageSummary}>
+          <div style={{
+            ...s.usagePercent,
+            color: breakdown.thresholdColor === "red" ? "var(--error)"
+              : breakdown.thresholdColor === "yellow" ? "var(--warning)"
+              : "var(--success)",
+          }}>
+            {Math.round(breakdown.usagePercent * 100)}% used
+          </div>
+          <div style={s.usageTokens}>
+            {breakdown.totalTokens.toLocaleString()} / {breakdown.budgetTokens.toLocaleString()} tokens
+          </div>
         </div>
+      )}
 
-        {/* Action bar */}
+      {/* Category breakdown bar */}
+      <div style={s.section}>
+        <div style={s.sectionTitle}>Breakdown</div>
+        <CategoryBar
+          categories={breakdown?.categories ?? []}
+          budgetTokens={breakdown?.budgetTokens ?? 200000}
+        />
+      </div>
+
+      {/* Actions */}
+      <div style={s.section}>
+        <div style={s.sectionTitle}>Actions</div>
         <div style={s.actionBar}>
           <button
             style={{
@@ -93,6 +190,10 @@ export function ContextInspector() {
             }}
             onClick={async () => {
               if (isCompacting) return;
+              const ctxStore = useContextStore.getState();
+              if (ctxStore.breakdown) {
+                ctxStore.setPreCompactTokens(ctxStore.breakdown.totalTokens);
+              }
               useStreamStore.setState({ isCompacting: true });
               try {
                 await compactContext();
@@ -142,50 +243,119 @@ export function ContextInspector() {
             </button>
           )}
         </div>
+      </div>
 
-        {/* Filters — only show when there are tags */}
-        {allTags.length > 0 && (
-          <div style={s.filters}>
+      {/* Auto-compact toggle */}
+      <div style={s.section}>
+        <div style={s.sectionTitle}>Auto-Compact</div>
+        <label style={s.toggleRow}>
+          <input
+            type="checkbox"
+            checked={autoCompactEnabled}
+            onChange={(e) => setAutoCompact(e.target.checked)}
+            style={s.checkbox}
+          />
+          <span style={s.toggleLabel}>
+            Automatically compact when context exceeds {Math.round(autoCompactThreshold * 100)}%
+          </span>
+        </label>
+        {autoCompactEnabled && (
+          <div style={s.sliderRow}>
             <input
-              style={s.searchInput}
-              type="text"
-              placeholder="Search tags..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              type="range"
+              min={60}
+              max={95}
+              step={5}
+              value={autoCompactThreshold * 100}
+              onChange={(e) => setAutoCompact(true, parseInt(e.target.value) / 100)}
+              style={s.slider}
             />
-            {pinnedCount > 0 && (
-              <select
-                style={s.filterSelect}
-                value={filter}
-                onChange={(e) => setFilter(e.target.value as FilterType)}
-              >
-                <option value="all">All ({allTags.length})</option>
-                <option value="pinned">Pinned ({pinnedCount})</option>
-                <option value="unpinned">Unpinned ({allTags.length - pinnedCount})</option>
-              </select>
-            )}
+            <span style={s.sliderValue}>{Math.round(autoCompactThreshold * 100)}%</span>
           </div>
         )}
+      </div>
 
-        {/* Tag list */}
-        <div style={s.itemList}>
-          {filteredTags.length === 0 ? (
-            <div style={s.emptyState}>
-              {allTags.length === 0
-                ? "No tags yet. Select text in the editor and press Cmd+Shift+T to create one."
-                : "No matching tags"}
-            </div>
-          ) : (
-            filteredTags.map((tag) => (
-              <TagRow
-                key={tag.id}
-                tag={tag}
-                onTogglePin={() => togglePin(tag.id)}
-                onDelete={() => deleteTag(tag.id)}
-              />
-            ))
+      {/* Info */}
+      <div style={s.infoBox}>
+        Select text in the editor and press <strong>Cmd+Shift+T</strong> to tag a code region.
+        Pin a tag to auto-inject it into the agent's system prompt.
+      </div>
+    </div>
+  );
+}
+
+// ── Tags Tab ──────────────────────────────────────────────────
+
+function TagsTab({
+  allTags,
+  filteredTags,
+  pinnedCount,
+  filter,
+  setFilter,
+  search,
+  setSearch,
+  togglePin,
+  deleteTag,
+}: {
+  allTags: RegionTag[];
+  filteredTags: RegionTag[];
+  pinnedCount: number;
+  filter: FilterType;
+  setFilter: (f: FilterType) => void;
+  search: string;
+  setSearch: (s: string) => void;
+  togglePin: (id: string) => void;
+  deleteTag: (id: string) => void;
+}) {
+  return (
+    <div style={s.tagsContent}>
+      {/* Summary */}
+      <div style={s.tagsSummary}>
+        <span>{allTags.length} tag{allTags.length !== 1 ? "s" : ""}{pinnedCount > 0 ? ` (${pinnedCount} pinned)` : ""}</span>
+      </div>
+
+      {/* Filters */}
+      {allTags.length > 0 && (
+        <div style={s.filters}>
+          <input
+            style={s.searchInput}
+            type="text"
+            placeholder="Search tags..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          {pinnedCount > 0 && (
+            <select
+              style={s.filterSelect}
+              value={filter}
+              onChange={(e) => setFilter(e.target.value as FilterType)}
+            >
+              <option value="all">All ({allTags.length})</option>
+              <option value="pinned">Pinned ({pinnedCount})</option>
+              <option value="unpinned">Unpinned ({allTags.length - pinnedCount})</option>
+            </select>
           )}
         </div>
+      )}
+
+      {/* Tag list */}
+      <div style={s.itemList}>
+        {filteredTags.length === 0 ? (
+          <div style={s.emptyState}>
+            {allTags.length === 0
+              ? "No tags yet. Select text in the editor and press Cmd+Shift+T to create one."
+              : "No matching tags"}
+          </div>
+        ) : (
+          filteredTags.map((tag) => (
+            <TagRow
+              key={tag.id}
+              tag={tag}
+              onTogglePin={() => togglePin(tag.id)}
+              onDelete={() => deleteTag(tag.id)}
+            />
+          ))
+        )}
       </div>
     </div>
   );
@@ -229,6 +399,8 @@ function TagRow({
   );
 }
 
+// ── Styles ────────────────────────────────────────────────────
+
 const s: Record<string, React.CSSProperties> = {
   overlay: {
     position: "fixed",
@@ -239,7 +411,7 @@ const s: Record<string, React.CSSProperties> = {
     justifyContent: "flex-end",
   },
   panel: {
-    width: 420,
+    width: 440,
     maxWidth: "80vw",
     height: "100%",
     background: "var(--bg-secondary)",
@@ -271,30 +443,68 @@ const s: Record<string, React.CSSProperties> = {
     fontFamily: "var(--font-mono)",
     padding: "2px 6px",
   },
-  summary: {
+  tabBar: {
     display: "flex",
-    justifyContent: "space-between",
-    padding: "8px 12px",
-    fontSize: "var(--font-size-xs)",
-    color: "var(--text-secondary)",
     borderBottom: "1px solid var(--border)",
     flexShrink: 0,
   },
-  info: {
-    padding: "8px 12px",
+  tab: {
+    flex: 1,
+    padding: "8px 4px",
+    fontSize: "var(--font-size-xs)",
+    fontWeight: 500,
+    background: "transparent",
+    border: "none",
+    borderBottom: "2px solid transparent",
+    cursor: "pointer",
+    fontFamily: "var(--font-ui)",
+    transition: "color 0.12s, border-color 0.12s",
+  },
+  tabContent: {
+    flex: 1,
+    overflow: "hidden",
+    display: "flex",
+    flexDirection: "column",
+  },
+
+  // Overview tab
+  overviewContent: {
+    flex: 1,
+    overflow: "auto",
+    padding: "12px",
+    display: "flex",
+    flexDirection: "column",
+    gap: 16,
+  },
+  usageSummary: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+  },
+  usagePercent: {
+    fontSize: "var(--font-size-md)",
+    fontWeight: 700,
+    fontFamily: "var(--font-mono)",
+  },
+  usageTokens: {
     fontSize: "var(--font-size-xs)",
     color: "var(--text-secondary)",
-    lineHeight: 1.4,
-    borderBottom: "1px solid var(--border)",
-    flexShrink: 0,
+    fontFamily: "var(--font-mono)",
+  },
+  section: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+  },
+  sectionTitle: {
+    fontSize: "var(--font-size-xs)",
+    fontWeight: 600,
+    color: "var(--text-secondary)",
+    textTransform: "uppercase" as const,
+    letterSpacing: "0.5px",
   },
   actionBar: {
     display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: "6px 12px",
-    borderBottom: "1px solid var(--border)",
-    flexShrink: 0,
     gap: 8,
   },
   actionBtn: {
@@ -310,8 +520,6 @@ const s: Record<string, React.CSSProperties> = {
     alignItems: "center",
     gap: 4,
     whiteSpace: "nowrap" as const,
-    position: "relative" as const,
-    zIndex: 10,
   },
   confirmGroup: {
     display: "flex",
@@ -342,6 +550,63 @@ const s: Record<string, React.CSSProperties> = {
     color: "var(--text-secondary)",
     fontFamily: "var(--font-ui)",
     cursor: "pointer",
+  },
+  toggleRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    cursor: "pointer",
+  },
+  checkbox: {
+    accentColor: "var(--accent)",
+  },
+  toggleLabel: {
+    fontSize: "var(--font-size-xs)",
+    color: "var(--text-primary)",
+  },
+  sliderRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    paddingLeft: 24,
+  },
+  slider: {
+    flex: 1,
+    accentColor: "var(--accent)",
+    height: 4,
+  },
+  sliderValue: {
+    fontSize: "var(--font-size-xs)",
+    color: "var(--text-secondary)",
+    fontFamily: "var(--font-mono)",
+    fontWeight: 600,
+    minWidth: 32,
+  },
+  infoBox: {
+    padding: "8px 12px",
+    fontSize: "var(--font-size-xs)",
+    color: "var(--text-secondary)",
+    lineHeight: 1.4,
+    background: "rgba(255,255,255,0.03)",
+    borderRadius: "var(--radius-sm)",
+    border: "1px solid var(--border)",
+  },
+
+  // Tags tab
+  tagsContent: {
+    flex: 1,
+    overflow: "hidden",
+    display: "flex",
+    flexDirection: "column",
+  },
+  tagsSummary: {
+    display: "flex",
+    justifyContent: "space-between",
+    padding: "8px 12px",
+    fontSize: "var(--font-size-xs)",
+    color: "var(--text-secondary)",
+    borderBottom: "1px solid var(--border)",
+    flexShrink: 0,
   },
   filters: {
     display: "flex",

@@ -22,6 +22,7 @@ pub struct AppState {
     pub pty_manager: StdMutex<pty::PtyManager>,
     pub orc_cancel: Arc<std::sync::atomic::AtomicBool>,
     pub orc_active: Arc<std::sync::atomic::AtomicBool>,
+    pub orc_plan_confirm: Arc<Notify>,
 }
 
 // ── Pi Agent Commands ───────────────────────────────────────
@@ -418,23 +419,44 @@ async fn list_sessions(
             let mut message_count = 0u32;
 
             if let Ok(content) = std::fs::read_to_string(&path) {
-                for line in content.lines().take(50) {
+                for line in content.lines() {
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-                        if let Some(n) = val.get("sessionName").and_then(|v| v.as_str()) {
-                            if !n.is_empty() {
-                                name = n.to_string();
-                            }
-                        }
-                        if val.get("role").and_then(|v| v.as_str()) == Some("user") {
-                            message_count += 1;
-                            if first_message.is_empty() {
-                                if let Some(text) = val.get("content").and_then(|v| v.as_str()) {
-                                    first_message = text.chars().take(100).collect();
+                        let entry_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+                        // Session name from session_info entries
+                        if entry_type == "session_info" {
+                            if let Some(n) = val.get("name").and_then(|v| v.as_str()) {
+                                if !n.is_empty() {
+                                    name = n.to_string();
                                 }
                             }
                         }
-                        if val.get("role").and_then(|v| v.as_str()) == Some("assistant") {
-                            message_count += 1;
+
+                        // Count messages — role is nested at entry.message.role
+                        if entry_type == "message" {
+                            if let Some(msg) = val.get("message") {
+                                let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
+                                if role == "user" {
+                                    message_count += 1;
+                                    if first_message.is_empty() {
+                                        // Extract text from content (string or array of parts)
+                                        if let Some(text) = msg.get("content").and_then(|v| v.as_str()) {
+                                            first_message = text.chars().take(100).collect();
+                                        } else if let Some(parts) = msg.get("content").and_then(|v| v.as_array()) {
+                                            for part in parts {
+                                                if part.get("type").and_then(|v| v.as_str()) == Some("text") {
+                                                    if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
+                                                        first_message = t.chars().take(100).collect();
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else if role == "assistant" {
+                                    message_count += 1;
+                                }
+                            }
                         }
                     }
                 }
@@ -549,15 +571,36 @@ async fn switch_session(
     Ok(())
 }
 
-/// Fork the current session from this point.
+/// Get user messages available for forking.
+#[tauri::command]
+async fn get_fork_messages(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let pi_guard = state.pi.lock().await;
+    let conn = pi_guard.as_ref().ok_or("Pi not connected")?;
+    let handle = conn.handle();
+    drop(pi_guard);
+
+    let mut cmd = serde_json::json!({ "type": "get_fork_messages" });
+    let rx = handle.send_with_id(&mut cmd).await.map_err(|e| e.to_string())?;
+
+    match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
+        Ok(Ok(val)) => Ok(val),
+        Ok(Err(_)) => Err("get_fork_messages response channel closed".to_string()),
+        Err(_) => Err("get_fork_messages timed out".to_string()),
+    }
+}
+
+/// Fork the current session from a specific user message.
 #[tauri::command]
 async fn fork_session(
+    entry_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let pi_guard = state.pi.lock().await;
     let conn = pi_guard.as_ref().ok_or("Pi not connected")?;
 
-    let cmd = serde_json::json!({ "type": "fork" });
+    let cmd = serde_json::json!({ "type": "fork", "entryId": entry_id });
     conn.send(&cmd).await.map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -851,6 +894,7 @@ async fn orchestrate(
     let notify = state.agent_end_notify.clone();
     let cancel_flag = state.orc_cancel.clone();
     let active_flag = state.orc_active.clone();
+    let plan_confirm = state.orc_plan_confirm.clone();
     // Reset cancel flag before starting
     cancel_flag.store(false, std::sync::atomic::Ordering::Relaxed);
     active_flag.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -877,7 +921,7 @@ async fn orchestrate(
         });
 
         let orc = orchestrator::Orchestrator::new(workspace);
-        let result = orc.run(prompt, pi_handle, handle.clone(), notify, cancel_flag).await;
+        let result = orc.run(prompt, pi_handle, handle.clone(), notify, cancel_flag, plan_confirm).await;
 
         // Stop heartbeat and mark orchestration inactive
         heartbeat_flag.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -925,6 +969,15 @@ async fn cancel_orchestration(
             "message": "Orchestration cancelled by user",
         }),
     );
+    Ok(())
+}
+
+/// Confirm plan execution after PlanReady phase.
+#[tauri::command]
+async fn confirm_plan_execution(
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    state.orc_plan_confirm.notify_one();
     Ok(())
 }
 
@@ -1358,6 +1411,98 @@ async fn keychain_delete_key(provider: String) -> Result<(), String> {
 #[tauri::command]
 async fn keychain_has_key(provider: String) -> Result<bool, String> {
     Ok(keychain::has_key(&provider))
+}
+
+// ── Context Management Commands ─────────────────────────────
+
+fn context_snapshot_path(workspace: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(workspace).join(".tide").join("context-snapshot.json")
+}
+
+fn context_exclusions_path(workspace: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(workspace).join(".tide").join("context-exclusions.json")
+}
+
+#[tauri::command]
+async fn get_context_breakdown(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let root = state.workspace_root.lock().await;
+    let workspace = root.as_deref().ok_or("No workspace open")?;
+    let path = context_snapshot_path(workspace);
+    if !path.exists() {
+        return Ok(serde_json::json!({ "categories": [], "totalTokens": 0 }));
+    }
+    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let snapshot: serde_json::Value = serde_json::from_str(&content)
+        .unwrap_or(serde_json::json!({ "categories": [], "totalTokens": 0 }));
+    Ok(snapshot)
+}
+
+#[tauri::command]
+async fn exclude_context_message(
+    state: tauri::State<'_, AppState>,
+    message_id: String,
+) -> Result<(), String> {
+    let root = state.workspace_root.lock().await;
+    let workspace = root.as_deref().ok_or("No workspace open")?;
+    let path = context_exclusions_path(workspace);
+
+    let mut exclusions: Vec<String> = if path.exists() {
+        let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    if !exclusions.contains(&message_id) {
+        exclusions.push(message_id);
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let content = serde_json::to_string_pretty(&exclusions).map_err(|e| e.to_string())?;
+    std::fs::write(&path, content).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn include_context_message(
+    state: tauri::State<'_, AppState>,
+    message_id: String,
+) -> Result<(), String> {
+    let root = state.workspace_root.lock().await;
+    let workspace = root.as_deref().ok_or("No workspace open")?;
+    let path = context_exclusions_path(workspace);
+
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let mut exclusions: Vec<String> = serde_json::from_str(&content).unwrap_or_default();
+    exclusions.retain(|id| id != &message_id);
+
+    let content = serde_json::to_string_pretty(&exclusions).map_err(|e| e.to_string())?;
+    std::fs::write(&path, content).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_context_exclusions(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let root = state.workspace_root.lock().await;
+    let workspace = root.as_deref().ok_or("No workspace open")?;
+    let path = context_exclusions_path(workspace);
+
+    if !path.exists() {
+        return Ok(serde_json::json!([]));
+    }
+    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let exclusions: serde_json::Value = serde_json::from_str(&content).unwrap_or(serde_json::json!([]));
+    Ok(exclusions)
 }
 
 // ── Region Tags Commands ────────────────────────────────────
@@ -1944,6 +2089,7 @@ pub fn run() {
             pty_manager: StdMutex::new(pty::PtyManager::new()),
             orc_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             orc_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            orc_plan_confirm: Arc::new(Notify::new()),
         })
         .setup(|app| {
             let pi_state = app.state::<AppState>().inner().pi.clone();
@@ -2047,6 +2193,7 @@ pub fn run() {
             respond_ui_request,
             orchestrate,
             cancel_orchestration,
+            confirm_plan_execution,
             open_workspace,
             fs_list_dir,
             fs_read_file,
@@ -2066,6 +2213,10 @@ pub fn run() {
             manage_skill,
             git_status,
             git_changed_files,
+            get_context_breakdown,
+            exclude_context_message,
+            include_context_message,
+            get_context_exclusions,
             tags_load,
             tags_save,
             set_pi_model,
@@ -2080,6 +2231,7 @@ pub fn run() {
             follow_up,
             switch_session,
             delete_session,
+            get_fork_messages,
             fork_session,
             set_session_name,
             export_session_html,

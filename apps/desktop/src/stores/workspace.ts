@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { invoke } from "@tauri-apps/api/core";
 import { fsListDir, fsWriteFile } from "../lib/ipc";
 import { showError, showSuccess } from "./toastStore";
 
@@ -35,6 +36,7 @@ interface WorkspaceState {
   updateTabContent: (path: string, content: string) => void;
   saveActiveFile: () => Promise<void>;
   refreshFileTree: () => void;
+  reloadTabsFromDisk: (changedPath?: string) => Promise<void>;
 }
 
 function insertChildren(entries: FsEntry[], dirPath: string, children: FsEntry[]): FsEntry[] {
@@ -167,5 +169,36 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }).catch((err) => {
       console.error("[Tide] Failed to refresh file tree:", err);
     });
+  },
+
+  reloadTabsFromDisk: async (changedPath?: string) => {
+    const { openTabs } = get();
+    // If a specific path is given, only reload matching tabs; otherwise reload all non-dirty tabs
+    const tabsToReload = changedPath
+      ? openTabs.filter(
+          (t) => t.path === changedPath || t.path.endsWith("/" + changedPath),
+        )
+      : openTabs.filter((t) => !t.isDirty);
+
+    for (const tab of tabsToReload) {
+      try {
+        const result = await invoke<{ content: string; totalLines: number; language: string }>(
+          "fs_read_file",
+          { path: tab.path },
+        );
+        // Only update if content actually changed
+        if (result.content !== tab.content) {
+          set((state) => ({
+            openTabs: state.openTabs.map((t) =>
+              t.path === tab.path
+                ? { ...t, content: result.content, isDirty: false }
+                : t,
+            ),
+          }));
+        }
+      } catch {
+        // File may have been deleted — ignore
+      }
+    }
   },
 }));

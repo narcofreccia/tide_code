@@ -2,7 +2,11 @@ import { useState, useEffect, useCallback } from "react";
 import { useStreamStore } from "../../stores/stream";
 import { listSessions, switchSession, newSession, deleteSession, type SessionInfo } from "../../lib/ipc";
 
-export function SessionHistoryTab() {
+interface SessionHistoryTabProps {
+  onSessionSwitch?: () => void;
+}
+
+export function SessionHistoryTab({ onSessionSwitch }: SessionHistoryTabProps = {}) {
   const sessionDir = useStreamStore((s) => s.sessionDir);
   const currentSessionId = useStreamStore((s) => s.sessionId);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -29,6 +33,7 @@ export function SessionHistoryTab() {
     if (currentSessionId && session.file.includes(currentSessionId)) return;
     try {
       await switchSession(session.file);
+      onSessionSwitch?.();
     } catch (err) {
       console.error("[Tide] Failed to switch session:", err);
     }
@@ -182,7 +187,7 @@ const s: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column" as const,
     gap: 2,
-    padding: "8px 12px",
+    padding: "8px 28px 8px 12px",
     borderBottomWidth: 1,
     borderBottomStyle: "solid",
     borderBottomColor: "var(--border)",
@@ -193,6 +198,7 @@ const s: Record<string, React.CSSProperties> = {
     cursor: "pointer",
     position: "relative" as const,
     fontFamily: "var(--font-ui)",
+    overflow: "hidden",
   },
   entryActive: {
     background: "rgba(122, 162, 247, 0.06)",
@@ -201,6 +207,8 @@ const s: Record<string, React.CSSProperties> = {
     display: "flex",
     alignItems: "center",
     gap: 6,
+    minWidth: 0,
+    maxWidth: "100%",
   },
   entryName: {
     fontSize: 12,
@@ -210,6 +218,7 @@ const s: Record<string, React.CSSProperties> = {
     textOverflow: "ellipsis",
     whiteSpace: "nowrap" as const,
     flex: 1,
+    minWidth: 0,
   },
   activeBadge: {
     fontSize: 9,
@@ -229,14 +238,16 @@ const s: Record<string, React.CSSProperties> = {
     position: "absolute" as const,
     top: 6,
     right: 8,
-    background: "transparent",
+    background: "var(--bg-primary)",
     border: "none",
     color: "var(--text-secondary)",
     cursor: "pointer",
     fontSize: 14,
     lineHeight: 1,
-    padding: "0 2px",
-    opacity: 0.5,
+    padding: "0 4px",
+    opacity: 0.7,
+    zIndex: 1,
+    borderRadius: 3,
   },
   empty: {
     fontFamily: "var(--font-ui)",

@@ -80,7 +80,11 @@ export function ContextDial() {
           style={{ transition: "stroke-dashoffset 0.3s, stroke 0.3s" }}
         />
       </svg>
-      <span style={{ ...s.label, color }}>{displayPercent}%</span>
+      <span style={{
+        ...s.label,
+        color,
+        animation: usagePercent >= 0.8 ? "contextPulse 2s ease-in-out infinite" : "none",
+      }}>{displayPercent}%</span>
 
       {showTooltip && (
         <DialTooltip breakdown={breakdown} indexed={indexed} indexing={indexing} fileCount={fileCount} symbolCount={symbolCount} />

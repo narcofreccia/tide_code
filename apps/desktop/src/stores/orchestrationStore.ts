@@ -7,6 +7,7 @@ export type OrcPhase =
   | "idle"
   | "routing"
   | "planning"
+  | "plan_ready"
   | "building"
   | "reviewing"
   | "complete"
@@ -71,7 +72,7 @@ const STALL_THRESHOLD_MS = 30_000;
 /** Check if orchestration appears stalled (no heartbeat in 30s while active). */
 export function isOrchestrationStalled(): boolean {
   const { phase, lastHeartbeat } = useOrchestrationStore.getState();
-  const isActive = phase !== "idle" && phase !== "complete" && phase !== "failed";
+  const isActive = phase !== "idle" && phase !== "complete" && phase !== "failed" && phase !== "plan_ready";
   if (!isActive || lastHeartbeat == null) return false;
   return Date.now() - lastHeartbeat > STALL_THRESHOLD_MS;
 }

@@ -198,9 +198,22 @@ export default function tideSafety(pi: ExtensionAPI) {
   });
 
   pi.on("tool_call", async (event, ctx) => {
-    // Auto-approve all tool calls during orchestration — the orchestrator is the controller
+    // During orchestration: auto-approve most tools but block destructive commands
     if (isOrchestrated) {
-      process.stderr.write(`[tide:safety] Auto-approved: ${event.toolName}\n`);
+      const toolName = event.toolName;
+      const args = (event.input ?? {}) as Record<string, unknown>;
+
+      // Block destructive bash commands (rm, mv on source files)
+      if (toolName === "bash") {
+        const cmd = String(args.command || "");
+        // Block rm commands that target source files (allow .tide/ cleanup)
+        if (/\brm\s/.test(cmd) && !/\.tide[/\\]/.test(cmd)) {
+          process.stderr.write(`[tide:safety] BLOCKED destructive command during orchestration: ${cmd.slice(0, 100)}\n`);
+          return { block: true, reason: "File deletion blocked during orchestration. Only the plan's target files should be modified." };
+        }
+      }
+
+      process.stderr.write(`[tide:safety] Auto-approved: ${toolName}\n`);
       return;
     }
 

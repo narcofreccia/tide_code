@@ -604,6 +604,13 @@ export default function tidePlanner(pi: ExtensionAPI) {
         });
       }
 
+      // Recompute plan status based on updated step states
+      const anyPending = plan.steps.some((s) => s.status === "pending");
+      const anyInProgress = plan.steps.some((s) => s.status === "in_progress");
+      if (anyPending || anyInProgress) {
+        plan.status = "in_progress";
+      }
+
       plan.updatedAt = new Date().toISOString();
       savePlan(ctx.cwd, plan);
       ctx.ui.setStatus("planner", JSON.stringify(plan));

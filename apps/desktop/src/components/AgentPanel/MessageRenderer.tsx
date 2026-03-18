@@ -25,15 +25,36 @@ function FileLink({ children, text }: { children: React.ReactNode; text: string 
   );
 }
 
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }, [text]);
+
+  return (
+    <button
+      style={s.copyBtn}
+      onClick={handleCopy}
+      title="Copy code"
+    >
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
 // Hoisted to module scope so ReactMarkdown doesn't see a new reference every render
 const markdownComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
   code({ className, children, ...props }) {
     const isBlock = className?.startsWith("language-");
     if (isBlock) {
+      const codeText = String(children).replace(/\n$/, "");
       return (
         <div style={s.codeBlock}>
           <div style={s.codeHeader}>
-            {className?.replace("language-", "") || "code"}
+            <span>{className?.replace("language-", "") || "code"}</span>
+            <CopyButton text={codeText} />
           </div>
           <pre style={s.pre}>
             <code {...props}>{children}</code>
@@ -126,12 +147,26 @@ const s: Record<string, React.CSSProperties> = {
     border: "1px solid var(--border)",
   },
   codeHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
     padding: "4px 12px",
     fontSize: "var(--font-size-xs)",
     fontFamily: "var(--font-mono)",
     color: "var(--text-secondary)",
     background: "var(--bg-tertiary)",
     borderBottom: "1px solid var(--border)",
+  },
+  copyBtn: {
+    padding: "1px 8px",
+    fontSize: "var(--font-size-xs)",
+    fontFamily: "var(--font-ui)",
+    color: "var(--text-secondary)",
+    background: "transparent",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-sm)",
+    cursor: "pointer",
+    lineHeight: 1.5,
   },
   pre: {
     margin: 0,

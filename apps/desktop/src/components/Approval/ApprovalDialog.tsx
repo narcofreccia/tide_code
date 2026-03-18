@@ -326,20 +326,23 @@ const s: Record<string, React.CSSProperties> = {
     alignItems: "center",
     justifyContent: "center",
     zIndex: 1000,
+    animation: "fadeIn 0.12s ease-out",
   },
   dialog: {
     display: "flex",
     flexDirection: "column",
     width: 480,
-    maxHeight: "80vh",
+    maxHeight: "85vh",
     background: "var(--bg-secondary)",
     border: "1px solid var(--border)",
     borderRadius: "var(--radius-md)",
     overflow: "hidden",
+    animation: "scaleIn 0.15s ease-out",
   },
   dialogWide: {
     width: "80vw",
-    maxWidth: 900,
+    maxWidth: 1100,
+    height: "80vh",
   },
   header: {
     display: "flex",
@@ -365,6 +368,7 @@ const s: Record<string, React.CSSProperties> = {
   },
   body: {
     padding: "12px 16px",
+    flexShrink: 0,
   },
   message: {
     fontFamily: "var(--font-ui)",
@@ -394,7 +398,9 @@ const s: Record<string, React.CSSProperties> = {
     margin: 0,
   },
   diffContainer: {
-    height: 300,
+    flex: 1,
+    minHeight: 250,
+    maxHeight: "60vh",
     borderTop: "1px solid var(--border)",
     borderBottom: "1px solid var(--border)",
   },
@@ -475,6 +481,7 @@ const s: Record<string, React.CSSProperties> = {
     justifyContent: "space-between",
     padding: "12px 16px",
     borderTop: "1px solid var(--border)",
+    flexShrink: 0,
   },
   rememberRow: {
     display: "flex",

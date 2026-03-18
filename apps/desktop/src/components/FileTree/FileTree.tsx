@@ -1,13 +1,54 @@
-import { useCallback, useState, useRef, useEffect } from "react";
+import React, { useCallback, useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { useWorkspaceStore, type FsEntry } from "../../stores/workspace";
+import { useGitFileStatusStore } from "../../stores/gitFileStatus";
 import { fsCreateFile, fsCreateDir, fsRename, fsDelete, ptyCreate } from "../../lib/ipc";
 import { ContextMenu, type ContextMenuItem } from "../ContextMenu/ContextMenu";
 import { FileIcon } from "./FileIcon";
 import { showError } from "../../stores/toastStore";
 import { useTerminalStore } from "../../stores/terminalStore";
 import styles from "./FileTree.module.css";
+
+const STATUS_COLORS: Record<string, string> = {
+  modified: "var(--warning)",
+  added: "var(--success)",
+  deleted: "var(--error)",
+  renamed: "var(--accent)",
+  untracked: "var(--text-secondary)",
+};
+
+const STATUS_LETTERS: Record<string, string> = {
+  modified: "M",
+  added: "A",
+  deleted: "D",
+  renamed: "R",
+  untracked: "?",
+};
+
+const STATUS_SEVERITY: Record<string, number> = {
+  deleted: 4,
+  modified: 3,
+  added: 2,
+  renamed: 1,
+  untracked: 0,
+};
+
+function getDirGitStatus(dirRelPath: string, statusMap: Map<string, string>): string | undefined {
+  let worst: string | undefined;
+  let worstSev = -1;
+  const prefix = dirRelPath + "/";
+  for (const [path, status] of statusMap) {
+    if (path.startsWith(prefix)) {
+      const sev = STATUS_SEVERITY[status] ?? 0;
+      if (sev > worstSev) {
+        worstSev = sev;
+        worst = status;
+      }
+    }
+  }
+  return worst;
+}
 
 interface RawFsEntry {
   name: string;
@@ -77,7 +118,7 @@ interface ContextMenuState {
   entry: FsEntry | null; // null = root context
 }
 
-function TreeItem({
+const TreeItem = React.memo(function TreeItem({
   entry,
   depth,
   onContextMenu,
@@ -93,7 +134,17 @@ function TreeItem({
   const { expandedDirs, toggleDir, setDirChildren, activeTabPath } =
     useWorkspaceStore();
   const openFile = useWorkspaceStore((s) => s.openFile);
+  const rootPath = useWorkspaceStore((s) => s.rootPath);
   const isOpen = expandedDirs.has(entry.path);
+
+  // Git status lookup — convert absolute path to relative
+  const statusMap = useGitFileStatusStore((s) => s.statusMap);
+  const relativePath = rootPath ? entry.path.replace(rootPath + "/", "") : entry.path;
+  const gitStatus = statusMap.get(relativePath);
+  // For directories, find the most severe child status
+  const dirGitStatus = entry.isDir
+    ? getDirGitStatus(relativePath, statusMap)
+    : undefined;
   const isRenaming = renamingPath === entry.path;
 
   const [creating, setCreating] = useState<"file" | "dir" | null>(null);
@@ -228,9 +279,21 @@ function TreeItem({
         <span className={styles.icon}>
           <FileIcon name={entry.name} isDir={entry.isDir} isOpen={isOpen} />
         </span>
-        <span className={`${styles.name} ${entry.isDir ? styles.dirName : ""}`}>
+        <span
+          className={`${styles.name} ${entry.isDir ? styles.dirName : ""}`}
+          style={(gitStatus || dirGitStatus) ? { color: STATUS_COLORS[gitStatus || dirGitStatus!] } : undefined}
+        >
           {entry.name}
         </span>
+        {(gitStatus || dirGitStatus) && (
+          <span
+            className={styles.gitStatus}
+            data-status={gitStatus || dirGitStatus}
+            style={{ color: STATUS_COLORS[gitStatus || dirGitStatus!] }}
+          >
+            {STATUS_LETTERS[gitStatus || dirGitStatus!]}
+          </span>
+        )}
       </div>
       {entry.isDir && isOpen && (
         <>
@@ -256,13 +319,21 @@ function TreeItem({
       )}
     </>
   );
-}
+});
 
 export function FileTree() {
   const { fileTree, rootPath } = useWorkspaceStore();
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [rootCreating, setRootCreating] = useState<"file" | "dir" | null>(null);
+
+  // Start/stop git file status polling
+  useEffect(() => {
+    if (rootPath) {
+      useGitFileStatusStore.getState().startPolling();
+      return () => useGitFileStatusStore.getState().stopPolling();
+    }
+  }, [rootPath]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent, entry: FsEntry) => {
     e.preventDefault();

@@ -16,6 +16,7 @@ export default function tideAuth(pi: ExtensionAPI) {
     description:
       "List available OAuth/subscription providers and their login status. " +
       "Used by Tide Settings UI. Do not call unless asked.",
+    promptSnippet: "tide_oauth_providers: List OAuth providers and login status (Tide UI only)",
     params: Type.Object({}),
     execute: async (_toolCallId, _params, _signal, _onUpdate, ctx) => {
       const authStorage = ctx.modelRegistry.authStorage;
@@ -42,6 +43,7 @@ export default function tideAuth(pi: ExtensionAPI) {
       "Start OAuth login flow for a subscription provider (e.g. openai-codex, " +
       "anthropic-max, copilot). Opens a browser for authentication. " +
       "Used by Tide Settings UI. Do not call unless asked.",
+    promptSnippet: "tide_oauth_login(provider_id): Start OAuth login for a provider (Tide UI only)",
     params: Type.Object({
       provider_id: Type.String({ description: "OAuth provider ID to login to" }),
     }),
@@ -101,6 +103,7 @@ export default function tideAuth(pi: ExtensionAPI) {
     description:
       "Logout from an OAuth/subscription provider, removing stored credentials. " +
       "Used by Tide Settings UI. Do not call unless asked.",
+    promptSnippet: "tide_oauth_logout(provider_id): Logout from an OAuth provider (Tide UI only)",
     params: Type.Object({
       provider_id: Type.String({ description: "OAuth provider ID to logout from" }),
     }),

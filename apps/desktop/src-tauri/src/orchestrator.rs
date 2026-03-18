@@ -13,6 +13,7 @@ pub enum OrcPhase {
     Idle,
     Routing,
     Planning,
+    PlanReady,
     Building,
     Reviewing,
     Complete,
@@ -29,6 +30,14 @@ pub struct OrcEvent {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+struct ModelRef {
+    provider: String,
+    id: String,
+    #[serde(default)]
+    name: String,
+}
+
 #[derive(Debug, Deserialize, serde::Serialize)]
 struct PlanStep {
     id: String,
@@ -43,6 +52,8 @@ struct PlanStep {
     expected_outcome: Option<String>,
     #[serde(default)]
     summary: Option<String>,
+    #[serde(default, rename = "assignedModel")]
+    assigned_model: Option<ModelRef>,
 }
 
 #[derive(Debug, Deserialize, serde::Serialize)]
@@ -147,6 +158,7 @@ impl Orchestrator {
         app_handle: tauri::AppHandle,
         agent_end_notify: Arc<Notify>,
         cancel: Arc<std::sync::atomic::AtomicBool>,
+        plan_confirm: Arc<Notify>,
     ) -> Result<(), String> {
         // Enable auto-compaction so Pi manages context size automatically
         let auto_compact_cmd = serde_json::json!({
@@ -173,6 +185,30 @@ impl Orchestrator {
 
         if total == 0 {
             return Err("Plan has no steps".to_string());
+        }
+
+        // ── Phase: PlanReady (wait for user confirmation) ────
+        Self::check_cancelled(&cancel)?;
+        self.emit_phase(
+            &app_handle,
+            OrcPhase::PlanReady,
+            Some(&plan_id),
+            0,
+            total,
+            &format!("Plan ready: {} steps. Review and confirm to execute.", total),
+        );
+
+        // Wait for either confirmation or cancellation
+        loop {
+            tokio::select! {
+                _ = plan_confirm.notified() => {
+                    tracing::info!("Plan execution confirmed by user");
+                    break;
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
+                    Self::check_cancelled(&cancel)?;
+                }
+            }
         }
 
         // ── Phase: Building ─────────────────────────────────
@@ -277,6 +313,7 @@ impl Orchestrator {
         cancel: &std::sync::atomic::AtomicBool,
     ) -> Result<(), String> {
         let execution_order = self.resolve_execution_order(plan_id)?;
+        let mut steps_executed = 0u32;
 
         for i in execution_order {
             Self::check_cancelled(cancel)?;
@@ -313,6 +350,23 @@ impl Orchestrator {
                 }
             }
 
+            // Switch model if step has an assigned model and model locking is off
+            if !self.config.lock_model_during_orchestration {
+                if let Some(ref model) = step.assigned_model {
+                    tracing::info!("Switching to {} ({}) for step '{}'", model.name, model.id, step.title);
+                    let set_model_cmd = serde_json::json!({
+                        "type": "set_model",
+                        "provider": model.provider,
+                        "modelId": model.id
+                    });
+                    if let Err(e) = pi_handle.send(&set_model_cmd).await {
+                        tracing::warn!("Failed to switch model for step '{}': {}", step.title, e);
+                    }
+                    // Brief pause to let model switch settle
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+            }
+
             self.emit_phase(
                 app_handle,
                 OrcPhase::Building,
@@ -326,7 +380,14 @@ impl Orchestrator {
 
             // Execute step with error recovery
             match self.send_and_wait(pi_handle, &step_prompt, notify).await {
-                Ok(()) => {}
+                Ok(()) => {
+                    steps_executed += 1;
+                    // Compact every 3rd step to prevent context bloat
+                    if steps_executed % 3 == 0 && (steps_executed as usize) < total {
+                        tracing::info!("Compacting after {} steps", steps_executed);
+                        self.compact(pi_handle).await;
+                    }
+                }
                 Err(e) => {
                     let error_msg = format!("Step {}/{} '{}' failed: {}", i + 1, total, step.title, e);
                     tracing::error!("{}", error_msg);
@@ -669,13 +730,10 @@ impl Orchestrator {
         Err(format!("Plan not found: {}", plan_id))
     }
 
-    /// Returns the orchestration marker prefix if model locking is enabled.
+    /// Returns the orchestration marker prefix.
+    /// Always sent so extensions can detect orchestrated prompts and auto-approve tools.
     fn orc_marker(&self) -> &str {
-        if self.config.lock_model_during_orchestration {
-            "[tide:orchestrated]\n"
-        } else {
-            ""
-        }
+        "[tide:orchestrated]\n"
     }
 
     // ── Prompt Builders ─────────────────────────────────────
@@ -718,12 +776,21 @@ impl Orchestrator {
              Follow these steps:\n\
              1. Explore the codebase to understand the current architecture\n\
              {clarify_instruction}\
-             3. Create a detailed implementation plan using `tide_plan_create`\n\
-             4. Write a research summary to `.tide/research.md` capturing:\n\
+             3. Create a detailed implementation plan using `tide_plan_create`. Each step MUST:\n\
+                - Describe CONCRETE code changes (what functions/components to add, modify, or refactor)\n\
+                - List EXACT file paths that will be modified (no wildcards like `src/*`)\n\
+                - Include expected outcome as a testable assertion\n\
+                - Be atomic: one logical change per step, small enough for a single agent turn\n\
+                - NOT be \"write a spec\" or \"create documentation\" unless the user explicitly asked for docs\n\
+             4. For each step, set the `assignedModel` field to right-size the model:\n\
+                - Code editing, refactoring, bug fixes → strongest coding model (prefer IDs containing \"codex\" or \"opus\")\n\
+                - Research, analysis, planning → standard model (prefer IDs containing \"gpt-5\" or \"sonnet\")\n\
+                - Simple validation, build checks → lightweight model (prefer IDs containing \"flash\", \"haiku\", or \"mini\")\n\
+                Use format: {{ provider: \"openai\", id: \"gpt-5.2-codex\", name: \"GPT-5.2 Codex\" }}\n\
+             5. Write a research summary to `.tide/research.md` capturing:\n\
                 - Key file paths and their roles\n\
                 - Existing patterns and conventions found\n\
                 - Architecture decisions relevant to this task\n\
-                - Any gotchas or constraints discovered\n\
                 This cache helps future build steps avoid re-exploring the codebase.\n\n\
              {research_context}\
              ## Original Request\n\n\
@@ -748,7 +815,7 @@ impl Orchestrator {
                 Ok(content) if !content.trim().is_empty() => {
                     format!(
                         "## Codebase Research\n\n{}\n\n",
-                        content.chars().take(3000).collect::<String>()
+                        content.chars().take(2000).collect::<String>()
                     )
                 }
                 _ => String::new(),
@@ -757,11 +824,21 @@ impl Orchestrator {
             String::new()
         };
 
-        // Build completed steps summaries (lightweight context from prior steps)
-        let completed_summaries: Vec<String> = plan
+        // Build completed step summaries — only dependency steps + last 2 (saves tokens)
+        let dep_ids: std::collections::HashSet<&str> = step.dependencies.iter().map(|s| s.as_str()).collect();
+        let all_completed: Vec<&PlanStep> = plan
             .steps
             .iter()
             .filter(|s| s.status == "completed" && s.summary.is_some())
+            .collect();
+        let completed_summaries: Vec<String> = all_completed
+            .iter()
+            .filter(|s| {
+                // Include if it's a dependency OR one of the last 2 completed steps
+                dep_ids.contains(s.id.as_str())
+                    || all_completed.len() <= 2
+                    || all_completed.iter().rev().take(2).any(|r| r.id == s.id)
+            })
             .map(|s| format!("- **{}**: {}", s.title, s.summary.as_deref().unwrap_or("")))
             .collect();
 
@@ -816,7 +893,13 @@ impl Orchestrator {
              {files_section}\
              {outcome_section}\n\
              {remaining_section}\
-             Execute ONLY this step. When done:\n\
+             Execute ONLY this step.\n\n\
+             CONSTRAINTS:\n\
+             - ONLY modify files listed in Target files. Do NOT create, delete, or modify any other files.\n\
+             - Do NOT delete files unless the step description explicitly requires it.\n\
+             - Make concrete code changes. Do not create documentation or spec files unless explicitly asked.\n\
+             - If you need to modify a file not in the list, explain why in your summary but do NOT modify it.\n\n\
+             When done:\n\
              1. Call `tide_plan_update` with planId=\"{plan_id}\", stepId=\"{step_id}\", status=\"completed\"\n\
              2. Call `tide_plan_step_summary` with a concise summary of what you did",
             step_num = step_index + 1,
