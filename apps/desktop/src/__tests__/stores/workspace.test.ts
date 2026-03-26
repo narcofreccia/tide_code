@@ -110,6 +110,6 @@ describe("useWorkspaceStore", () => {
     useWorkspaceStore.getState().closeTab("/a.ts");
 
     expect(useWorkspaceStore.getState().openTabs).toHaveLength(0);
-    expect(useWorkspaceStore.getState().activeTabPath).toBeUndefined();
+    expect(useWorkspaceStore.getState().activeTabPath).toBeNull();
   });
 });
