@@ -1,5 +1,200 @@
 {
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"D:\\repos\\tide_code\\.claude\\hooks\\hookmaster\\docker-safety\\script.sh\"",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|MultiEdit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"D:\\repos\\tide_code\\.claude\\hooks\\hookmaster\\protect-critical-files\\script.sh\"",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"D:\\repos\\tide_code\\.claude\\hooks\\hookmaster\\activity-logger\\script.sh\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"D:\\repos\\tide_code\\.claude\\hooks\\hookmaster\\secret-scanner\\script.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash \"D:\\repos\\tide_code\\.claude\\hooks\\hookmaster\\combo-format-and-lint\\script.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash \"D:\\repos\\tide_code\\.claude\\hooks\\hookmaster\\combo-quality-suite\\script.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash \"D:\\repos\\tide_code\\.claude\\hooks\\hookmaster\\file-size-guard\\script.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash \"D:\\repos\\tide_code\\.claude\\hooks\\hookmaster\\type-check\\script.sh\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"D:\\repos\\tide_code\\.claude\\hooks\\hookmaster\\completion-notifier\\script.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash \"D:\\repos\\tide_code\\.claude\\hooks\\hookmaster\\auto-stage-commit\\script.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash \"D:\\repos\\tide_code\\.claude\\hooks\\hookmaster\\changelog-generator\\script.sh\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash \"D:\\repos\\tide_code\\.claude\\hooks\\hookmaster\\stop-until-tests-pass\\script.sh\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "ConfigChange": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"D:\\repos\\tide_code\\.claude\\hooks\\hookmaster\\conflict-watchdog\\script.cjs\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"D:\\repos\\tide_code\\.claude\\hooks\\hookmaster\\time-tracker-end\\script.sh\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"D:\\repos\\tide_code\\.claude\\hooks\\hookmaster\\transcript-backup\\script.sh\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Review this subagent completion: $ARGUMENTS. Verify the task was completed successfully and no critical steps were skipped. If the output is incomplete or incorrect, set decision to \\\"block\\\" with a reason."
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"D:\\repos\\tide_code\\.claude\\hooks\\hookmaster\\subagent-start-logger\\script.sh\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "Read|Glob|Grep|LS",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"D:\\repos\\tide_code\\.claude\\hooks\\hookmaster\\auto-approve-reads\\script.sh\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"D:\\repos\\tide_code\\.claude\\hooks\\hookmaster\\error-alert\\script.sh\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"D:\\repos\\tide_code\\.claude\\hooks\\hookmaster\\sound-alert\\script.sh\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"D:\\repos\\tide_code\\.claude\\hooks\\hookmaster\\time-tracker\\script.sh\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
   }
 }
