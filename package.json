@@ -8,7 +8,8 @@
     "build": "pnpm --filter @tide/shared build && pnpm --filter @tide/desktop build",
     "build:shared": "pnpm --filter @tide/shared build",
     "tauri": "pnpm --filter @tide/desktop tauri",
-    "tauri:dev": "pnpm --filter @tide/desktop tauri dev"
+    "tauri:dev": "pnpm --filter @tide/desktop tauri dev",
+    "test": "pnpm --filter @tide/desktop test"
   },
   "engines": {
     "node": ">=20.0.0"

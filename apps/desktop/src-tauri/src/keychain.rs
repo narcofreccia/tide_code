@@ -55,37 +55,39 @@ mod platform {
         Ok(())
     }
 
-    fn with_store<F, R>(f: F) -> R
+    fn with_store<F, R>(f: F) -> Result<R, String>
     where
         F: FnOnce(&mut HashMap<String, String>) -> R,
     {
-        let mut guard = STORE.lock().unwrap();
+        let mut guard = STORE
+            .lock()
+            .map_err(|e| format!("keychain lock poisoned: {e}"))?;
         if guard.is_none() {
             *guard = Some(load_store());
         }
-        f(guard.as_mut().unwrap())
+        Ok(f(guard.as_mut().expect("just initialized above")))
     }
 
     pub fn set_key(provider: &str, key: &str) -> Result<(), String> {
         with_store(|store| {
             store.insert(provider.to_string(), key.to_string());
             save_store(store)
-        })
+        })?
     }
 
     pub fn get_key(provider: &str) -> Result<Option<String>, String> {
-        Ok(with_store(|store| store.get(provider).cloned()))
+        with_store(|store| store.get(provider).cloned())
     }
 
     pub fn delete_key(provider: &str) -> Result<(), String> {
         with_store(|store| {
             store.remove(provider);
             save_store(store)
-        })
+        })?
     }
 
     pub fn has_key(provider: &str) -> bool {
-        with_store(|store| store.contains_key(provider))
+        with_store(|store| store.contains_key(provider)).unwrap_or(false)
     }
 }
 
