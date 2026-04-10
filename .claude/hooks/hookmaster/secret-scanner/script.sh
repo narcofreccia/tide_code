@@ -23,7 +23,7 @@ SECRET_PATTERNS=(
   'xoxb-[0-9]{10,}-[a-zA-Z0-9]{24}'     # Slack bot token
   'eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.' # JWT tokens
   'PRIVATE KEY-----'                     # Private keys
-  'password\s*[:=]\s*["'][^"']{8,}'  # Hardcoded passwords
+  'password\s*[:=]\s*["'"'"'][^"'"'"']{8,}'  # Hardcoded passwords
 )
 
 FOUND=0
