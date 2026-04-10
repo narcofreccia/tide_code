@@ -14,7 +14,7 @@ function log(msg: string) {
 
 // ── Non-chat model exclusion (API-based, not pattern-based) ─
 
-const EXCLUDED_API_PATTERNS = ["embedding", "tts", "whisper", "moderation", "image", "dall-e"];
+const EXCLUDED_API_PATTERNS = ["embedding", "tts", "whisper", "moderation", "image", "dall-e", "2.0-flash"];
 
 function isChatModel(m: { id: string; api?: string }): boolean {
   const lower = (m.id + " " + (m.api || "")).toLowerCase();
@@ -116,11 +116,22 @@ function persistRouterState(cwd: string, state: RouterState): void {
   }
 }
 
+function isModelExcluded(modelId: string): boolean {
+  const lower = modelId.toLowerCase();
+  return EXCLUDED_API_PATTERNS.some((p) => lower.includes(p));
+}
+
 function loadPersistedRouterState(cwd: string): RouterState | null {
   try {
     const p = routerStatePath(cwd);
     if (fs.existsSync(p)) {
-      return JSON.parse(fs.readFileSync(p, "utf-8"));
+      const state = JSON.parse(fs.readFileSync(p, "utf-8")) as RouterState;
+      if (isModelExcluded(state.routedModel.id)) {
+        log(`Discarding persisted state: ${state.routedModel.id} is now excluded`);
+        fs.unlinkSync(p);
+        return null;
+      }
+      return state;
     }
   } catch { /* ignore corrupt state */ }
   return null;
@@ -227,6 +238,12 @@ export default function tideRouter(pi: ExtensionAPI) {
 
     // ── First-message-only check ──────────────────────────
     const sessionId = (ctx as any).sessionFile || (ctx as any).sessionId || "";
+
+    // Invalidate in-memory state if model is now excluded
+    if (currentRouterState && isModelExcluded(currentRouterState.routedModel.id)) {
+      log(`Clearing in-memory state: ${currentRouterState.routedModel.id} is now excluded`);
+      currentRouterState = null;
+    }
 
     if (currentRouterState) {
       if (sessionId && currentRouterState.sessionId === sessionId) {
