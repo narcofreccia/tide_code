@@ -53,7 +53,16 @@ export function SessionHistoryTab({ onSessionSwitch }: SessionHistoryTabProps = 
     const isActive = currentSessionId ? session.file.includes(currentSessionId) : false;
     try {
       await deleteSession(session.file, isActive);
+      // Clear the chatbox if we deleted the active session
+      if (isActive) {
+        useStreamStore.getState().clearMessages();
+      }
       refresh();
+      // If no sessions left after refresh, clear chatbox too
+      const remaining = await listSessions();
+      if (remaining.length === 0) {
+        useStreamStore.getState().clearMessages();
+      }
     } catch (err) {
       console.error("[Tide] Failed to delete session:", err);
     }

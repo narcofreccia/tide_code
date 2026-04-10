@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { usePlanStore, type Plan, type PlanStep } from "../../stores/planStore";
+import { useStreamStore } from "../../stores/stream";
 import { useWorkspaceStore } from "../../stores/workspace";
 import { useOrchestrationStore } from "../../stores/orchestrationStore";
 import { openFileByPath } from "../../lib/fileHelpers";
@@ -267,6 +268,7 @@ function PlanActions({ plan }: { plan: Plan }) {
     setLoading(true);
     try {
       await newSession();
+      useStreamStore.getState().clearMessages();
       window.dispatchEvent(new CustomEvent("tide:switch-tab", { detail: "chat" }));
 
       const stepList = plan.steps.map((st, i) => `${i + 1}. ${st.title}`).join("\n");
@@ -288,6 +290,7 @@ function PlanActions({ plan }: { plan: Plan }) {
     setLoading(true);
     try {
       await newSession();
+      useStreamStore.getState().clearMessages();
       window.dispatchEvent(new CustomEvent("tide:switch-tab", { detail: "chat" }));
 
       const completedSummary = completedSteps

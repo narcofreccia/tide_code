@@ -426,6 +426,11 @@ export function ExpertsTab() {
     if (!synthesisMsg?.content) return;
     setExecuting(true);
     try {
+      // Clear the chatbox for a fresh start
+      useExpertsStore.getState(); // ensure store is hydrated
+      const { clearMessages } = await import("../../stores/stream").then(m => m.useStreamStore.getState());
+      clearMessages();
+
       // Use the orchestrator's existing pipeline with expert synthesis as context.
       // The orchestrator will: Plan (using expert synthesis as pre-research) →
       // Wait for user confirmation → Execute steps → Review
