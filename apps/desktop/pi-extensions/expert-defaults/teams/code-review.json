@@ -1,0 +1,11 @@
+{
+  "id": "code-review",
+  "name": "Code Review Team",
+  "description": "Architecture, security, and performance experts review code changes and design decisions",
+  "experts": ["architect", "security", "performance"],
+  "leader": "architect",
+  "debateRounds": 2,
+  "timeLimitMinutes": 10,
+  "createdAt": "2026-04-09T00:00:00Z",
+  "updatedAt": "2026-04-09T00:00:00Z"
+}

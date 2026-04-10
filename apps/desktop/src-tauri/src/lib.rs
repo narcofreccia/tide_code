@@ -4,6 +4,7 @@ mod ipc;
 mod keychain;
 mod sidecar;
 
+mod experts;
 mod orchestrator;
 mod pty;
 
@@ -23,6 +24,8 @@ pub struct AppState {
     pub orc_cancel: Arc<std::sync::atomic::AtomicBool>,
     pub orc_active: Arc<std::sync::atomic::AtomicBool>,
     pub orc_plan_confirm: Arc<Notify>,
+    pub experts_watcher: Arc<Mutex<Option<notify::RecommendedWatcher>>>,
+    pub experts_session_dir: Arc<Mutex<Option<String>>>,
 }
 
 // ── Pi Agent Commands ───────────────────────────────────────
@@ -674,6 +677,8 @@ async fn write_router_config(
     enabled: bool,
     auto_switch: bool,
     tier_models: Option<serde_json::Value>,
+    orchestrator_models: Option<serde_json::Value>,
+    subagent_models: Option<serde_json::Value>,
 ) -> Result<(), String> {
     let root = state.workspace_root.lock().await;
     let workspace = root.as_ref().ok_or("No workspace open")?;
@@ -697,6 +702,12 @@ async fn write_router_config(
     config["autoSwitch"] = serde_json::json!(auto_switch);
     if let Some(tiers) = tier_models {
         config["tierModels"] = tiers;
+    }
+    if let Some(orc) = orchestrator_models {
+        config["orchestratorModels"] = orc;
+    }
+    if let Some(sub) = subagent_models {
+        config["subagentModels"] = sub;
     }
 
     std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap())
@@ -880,6 +891,7 @@ async fn orchestrate(
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
     prompt: String,
+    expert_session_id: Option<String>,
 ) -> Result<(), String> {
     let workspace = {
         let root = state.workspace_root.lock().await;
@@ -920,8 +932,33 @@ async fn orchestrate(
             }
         });
 
-        let orc = orchestrator::Orchestrator::new(workspace);
-        let result = orc.run(prompt, pi_handle, handle.clone(), notify, cancel_flag, plan_confirm).await;
+        let orc = orchestrator::Orchestrator::new(workspace.clone());
+
+        // Load expert synthesis if an expert session ID was provided (non-blocking)
+        let expert_context = match expert_session_id {
+            Some(sid) => {
+                let ws = workspace.clone();
+                tokio::task::spawn_blocking(move || {
+                    let state_path = std::path::PathBuf::from(&ws)
+                        .join(".tide").join("experts").join("sessions").join(&sid).join("state.json");
+                    if let Ok(content) = std::fs::read_to_string(&state_path) {
+                        if let Ok(state) = serde_json::from_str::<serde_json::Value>(&content) {
+                            return state.get("synthesis")
+                                .and_then(|s| s.get("raw"))
+                                .and_then(|r| r.as_str())
+                                .map(|s| s.to_string());
+                        }
+                    }
+                    None
+                }).await.unwrap_or_else(|e| {
+                    tracing::warn!("Failed to load expert context: {}", e);
+                    None
+                })
+            }
+            None => None,
+        };
+
+        let result = orc.run(prompt, expert_context, pi_handle, handle.clone(), notify, cancel_flag, plan_confirm).await;
 
         // Stop heartbeat and mark orchestration inactive
         heartbeat_flag.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -1832,6 +1869,7 @@ fn resolve_extension_paths() -> Vec<String> {
     let ext_names = [
         "tide-safety", "tide-project", "tide-session", "tide-router",
         "tide-planner", "tide-index", "tide-web-search", "tide-auth",
+        "tide-subagent", "tide-experts",
     ];
 
     // 1. Production: bundled pre-transpiled .js extensions in Resources/pi-extensions/
@@ -2090,6 +2128,8 @@ pub fn run() {
             orc_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             orc_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             orc_plan_confirm: Arc::new(Notify::new()),
+            experts_watcher: Arc::new(Mutex::new(None)),
+            experts_session_dir: Arc::new(Mutex::new(None)),
         })
         .setup(|app| {
             let pi_state = app.state::<AppState>().inner().pi.clone();
@@ -2269,6 +2309,20 @@ pub fn run() {
             oauth_list_providers,
             oauth_logout,
             get_version_info,
+            experts::start_experts_session,
+            experts::resume_experts_session,
+            experts::send_expert_message,
+            experts::list_expert_teams,
+            experts::save_expert_team,
+            experts::delete_expert_team,
+            experts::list_experts_configs,
+            experts::save_expert_config,
+            experts::delete_expert_config,
+            experts::list_experts_sessions,
+            experts::get_experts_session,
+            experts::get_experts_session_messages,
+            experts::get_experts_session_findings,
+            experts::delete_experts_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tide");

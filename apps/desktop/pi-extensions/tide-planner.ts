@@ -212,6 +212,69 @@ export default function tidePlanner(pi: ExtensionAPI) {
     }
   });
 
+  // ── Custom Compaction ───────────────────────────────────
+  // Provide plan-aware compaction summaries so step context survives compaction.
+  pi.on("session_before_compact" as any, async (_event: any, ctx: any) => {
+    try {
+      const plansDir = path.join(ctx.cwd, ".tide", "plans");
+      if (!fs.existsSync(plansDir)) return;
+
+      const planFiles = fs.readdirSync(plansDir)
+        .filter((f: string) => f.endsWith(".json"))
+        .sort()
+        .reverse();
+
+      for (const pf of planFiles) {
+        const plan = JSON.parse(fs.readFileSync(path.join(plansDir, pf), "utf-8"));
+        if (!plan.steps) continue;
+
+        const hasActive = plan.steps.some((s: any) =>
+          s.status === "in_progress" || s.status === "pending"
+        );
+        if (!hasActive) continue;
+
+        // Build plan-aware compaction summary
+        const lines: string[] = [
+          `## Active Plan: ${plan.title}`,
+          "",
+        ];
+
+        // Completed steps with summaries
+        const completed = plan.steps.filter((s: any) => s.status === "completed");
+        if (completed.length > 0) {
+          lines.push("### Completed Steps:");
+          for (const s of completed) {
+            lines.push(`- [x] ${s.title}${s.summary ? `: ${s.summary}` : ""}`);
+            if (s.files?.length) lines.push(`  Files: ${s.files.join(", ")}`);
+          }
+          lines.push("");
+        }
+
+        // Pending steps
+        const pending = plan.steps.filter((s: any) => s.status === "pending" || s.status === "in_progress");
+        if (pending.length > 0) {
+          lines.push("### Remaining Steps:");
+          for (const s of pending) {
+            lines.push(`- [ ] ${s.title}: ${s.description || ""}`);
+          }
+        }
+
+        // Load research cache
+        const researchPath = path.join(ctx.cwd, ".tide", "research.md");
+        if (fs.existsSync(researchPath)) {
+          const research = fs.readFileSync(researchPath, "utf-8").trim();
+          if (research) {
+            lines.push("", "### Research Cache:", research.slice(0, 1500));
+          }
+        }
+
+        return { summary: lines.join("\n") };
+      }
+    } catch (err) {
+      process.stderr.write(`[tide:planner] Compaction handler error: ${err}\n`);
+    }
+  });
+
   // ── Tool: Create Plan ───────────────────────────────────
 
   pi.registerTool({

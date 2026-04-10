@@ -1,0 +1,11 @@
+{
+  "id": "full-review",
+  "name": "Full Review Board",
+  "description": "All five experts provide comprehensive analysis with diverse perspectives",
+  "experts": ["architect", "security", "performance", "ux", "devils-advocate"],
+  "leader": "architect",
+  "debateRounds": 2,
+  "timeLimitMinutes": 15,
+  "createdAt": "2026-04-09T00:00:00Z",
+  "updatedAt": "2026-04-09T00:00:00Z"
+}

@@ -32,6 +32,7 @@ import { initApprovalListener } from "./stores/approvalStore";
 import { usePermissionStore } from "./stores/permissionStore";
 import { useIndexStore } from "./stores/indexStore";
 import { initOrchestrationListener } from "./stores/orchestrationStore";
+import { initExpertsListener } from "./stores/expertsStore";
 import { listen } from "@tauri-apps/api/event";
 import { checkForUpdates } from "./lib/updater";
 import { Toasts } from "./components/Toasts";
@@ -88,6 +89,7 @@ export function App() {
     let cancelled = false;
     initApprovalListener();
     initOrchestrationListener();
+    initExpertsListener();
     usePermissionStore.getState().load();
     useSettingsStore.getState().load();
     checkForUpdates();

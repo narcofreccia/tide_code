@@ -19,8 +19,8 @@ export async function sendPrompt(
 
 /** Start an orchestrated pipeline: Route → Plan → Build → Review.
  *  Progress emitted as `orchestration_event` Tauri events. */
-export async function orchestrate(prompt: string): Promise<void> {
-  await invoke("orchestrate", { prompt });
+export async function orchestrate(prompt: string, expertSessionId?: string): Promise<void> {
+  await invoke("orchestrate", { prompt, expertSessionId: expertSessionId ?? null });
 }
 
 /** Cancel a running orchestration pipeline. */
@@ -195,20 +195,46 @@ export async function writeOrchestratorConfig(config: OrchestratorConfig): Promi
   await invoke("write_orchestrator_config", { config });
 }
 
+/** Model reference for config (provider + id). */
+export interface ModelRef {
+  provider: string;
+  id: string;
+}
+
+/** Full router config shape. */
+export interface RouterConfig {
+  enabled: boolean;
+  autoSwitch: boolean;
+  tierModels?: Record<string, ModelRef | undefined>;
+  orchestratorModels?: {
+    codeEditing?: ModelRef;
+    research?: ModelRef;
+    validation?: ModelRef;
+  };
+  subagentModels?: {
+    webSearch?: ModelRef;
+    codebaseExploration?: ModelRef;
+  };
+}
+
 /** Read router config from .tide/router-config.json. */
-export async function readRouterConfig(): Promise<{ enabled: boolean; autoSwitch: boolean }> {
+export async function readRouterConfig(): Promise<RouterConfig> {
   return invoke("read_router_config");
 }
 
 /** Write router config to .tide/router-config.json. */
 export async function writeRouterConfig(
   autoSwitch: boolean,
-  tierModels?: Record<string, { provider: string; id: string } | undefined>,
+  tierModels?: Record<string, ModelRef | undefined>,
+  orchestratorModels?: RouterConfig["orchestratorModels"],
+  subagentModels?: RouterConfig["subagentModels"],
 ): Promise<void> {
   await invoke("write_router_config", {
     enabled: true,
     autoSwitch,
     tierModels: tierModels ?? null,
+    orchestratorModels: orchestratorModels ?? null,
+    subagentModels: subagentModels ?? null,
   });
 }
 
@@ -628,4 +654,104 @@ export async function ptyResize(ptyId: string, cols: number, rows: number): Prom
 
 export async function ptyKill(ptyId: string): Promise<void> {
   await invoke("pty_kill", { ptyId });
+}
+
+// ── Expert Teams & Sessions ───────────────────────────────
+
+export interface TeamConfig {
+  id: string;
+  name: string;
+  description: string;
+  experts: string[];
+  leader: string;
+  debateRounds: number;
+  timeLimitMinutes: number;
+  defaultModel?: { provider: string; id: string };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExpertConfigEntry {
+  name: string;
+  content: string;
+}
+
+export interface ExpertsSessionState {
+  id: string;
+  teamId: string;
+  topic: string;
+  phase: string;
+  experts: {
+    name: string;
+    model: string;
+    status: string;
+    messageCount: number;
+    findingCount: number;
+  }[];
+  synthesis: { raw: string; judge: string; timestamp: string } | null;
+  timeLimitReached: boolean;
+  usage: { inputTokens: number; outputTokens: number };
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface ExpertMailboxMessage {
+  id: string;
+  from: string;
+  to: string;
+  type: string;
+  content: string;
+  references: string[];
+  inReplyTo: string | null;
+  timestamp: string;
+}
+
+// Teams
+export async function listExpertTeams(): Promise<TeamConfig[]> {
+  return invoke("list_expert_teams");
+}
+export async function saveExpertTeam(config: TeamConfig): Promise<void> {
+  await invoke("save_expert_team", { config });
+}
+export async function deleteExpertTeam(teamId: string): Promise<void> {
+  await invoke("delete_expert_team", { teamId });
+}
+
+// Individual experts
+export async function listExpertsConfigs(): Promise<ExpertConfigEntry[]> {
+  return invoke("list_experts_configs");
+}
+export async function saveExpertConfig(name: string, content: string): Promise<void> {
+  await invoke("save_expert_config", { name, content });
+}
+export async function deleteExpertConfig(name: string): Promise<void> {
+  await invoke("delete_expert_config", { name });
+}
+
+// Sessions
+export async function listExpertsSessions(): Promise<ExpertsSessionState[]> {
+  return invoke("list_experts_sessions");
+}
+export async function getExpertsSession(sessionId: string): Promise<ExpertsSessionState> {
+  return invoke("get_experts_session", { sessionId });
+}
+export async function getExpertsSessionMessages(sessionId: string): Promise<ExpertMailboxMessage[]> {
+  return invoke("get_experts_session_messages", { sessionId });
+}
+export async function getExpertsSessionFindings(sessionId: string): Promise<unknown[]> {
+  return invoke("get_experts_session_findings", { sessionId });
+}
+export async function deleteExpertsSession(sessionId: string): Promise<void> {
+  await invoke("delete_experts_session", { sessionId });
+}
+
+// Expert session lifecycle
+export async function startExpertsSession(teamId: string, topic: string): Promise<string> {
+  return invoke("start_experts_session", { teamId, topic });
+}
+export async function resumeExpertsSession(sessionId: string): Promise<void> {
+  await invoke("resume_experts_session", { sessionId });
+}
+export async function sendExpertMessage(content: string, to?: string): Promise<void> {
+  await invoke("send_expert_message", { content, to: to ?? null });
 }

@@ -66,6 +66,8 @@ function writeSnapshotAtomic(workspaceRoot: string, snapshot: ContextSnapshot): 
 }
 
 export default function tideContext(pi: ExtensionAPI) {
+  let lastSnapshotTokens = 0;
+
   pi.on("context", async (event, ctx) => {
     const workspaceRoot = ctx.cwd;
     const messages = event.messages;
@@ -92,9 +94,13 @@ export default function tideContext(pi: ExtensionAPI) {
       }
     }
 
-    // Estimate tool definitions (~500 tokens per tool, rough estimate)
-    // Pi doesn't expose tool count directly, use a conservative estimate
-    const toolDefTokens = 12000; // ~24 tools × 500 tokens each
+    // Estimate tool definitions based on actual active tool count (~500 tokens each)
+    let toolCount = 24; // fallback
+    try {
+      const allTools = pi.getAllTools();
+      if (Array.isArray(allTools)) toolCount = allTools.length;
+    } catch { /* use fallback */ }
+    const toolDefTokens = toolCount * 500;
 
     const totalTokens = systemTokens + conversationTokens + toolResultTokens + toolDefTokens;
 
@@ -110,12 +116,16 @@ export default function tideContext(pi: ExtensionAPI) {
     }
     categories.push({ category: "Tool Definitions", tokens: toolDefTokens, percentage: totalTokens > 0 ? toolDefTokens / totalTokens : 0 });
 
-    // Write snapshot for frontend consumption
-    writeSnapshotAtomic(workspaceRoot, {
-      categories,
-      totalTokens,
-      timestamp: new Date().toISOString(),
-    });
+    // Write snapshot for frontend consumption (throttled: only if >5% change)
+    const delta = Math.abs(totalTokens - lastSnapshotTokens);
+    if (lastSnapshotTokens === 0 || delta / Math.max(lastSnapshotTokens, 1) > 0.05) {
+      writeSnapshotAtomic(workspaceRoot, {
+        categories,
+        totalTokens,
+        timestamp: new Date().toISOString(),
+      });
+      lastSnapshotTokens = totalTokens;
+    }
 
     // --- Filter excluded messages ---
     if (excluded.size > 0) {

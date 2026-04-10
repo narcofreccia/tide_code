@@ -4,6 +4,7 @@ import { sendPrompt, abortAgent, steerAgent, followUp, newSession, listSessions,
 const LogsTab = lazy(() => import("./LogsTab").then(m => ({ default: m.LogsTab })));
 const PlanTab = lazy(() => import("./PlanTab").then(m => ({ default: m.PlanTab })));
 const SessionHistoryTab = lazy(() => import("./SessionHistoryTab").then(m => ({ default: m.SessionHistoryTab })));
+const ExpertsTab = lazy(() => import("../ExpertsPanel/ExpertsTab").then(m => ({ default: m.ExpertsTab })));
 import { MessageRenderer } from "./MessageRenderer";
 import { ClarifyCard } from "./ClarifyCard";
 import { PipelineProgress } from "./PipelineProgress";
@@ -13,7 +14,7 @@ import { useOrchestrationStore, isOrchestrationStalled } from "../../stores/orch
 import { ContextWarning } from "../ContextWarning/ContextWarning";
 import css from "./AgentPanel.module.css";
 
-type TabId = "chat" | "logs" | "plan" | "history";
+type TabId = "chat" | "logs" | "plan" | "experts" | "history";
 
 // ── Attachment types ────────────────────────────────────────
 
@@ -664,6 +665,12 @@ export function AgentPanel() {
           Plan
         </button>
         <button
+          style={{ ...s.tab, ...(activeTab === "experts" ? s.tabActive : {}) }}
+          onClick={() => setActiveTab("experts")}
+        >
+          Experts
+        </button>
+        <button
           style={{ ...s.tab, ...(activeTab === "history" ? s.tabActive : {}) }}
           onClick={() => setActiveTab("history")}
         >
@@ -934,6 +941,8 @@ export function AgentPanel() {
             <LogsTab />
           ) : activeTab === "plan" ? (
             <PlanTab />
+          ) : activeTab === "experts" ? (
+            <ExpertsTab />
           ) : (
             <SessionHistoryTab onSessionSwitch={() => setActiveTab("chat")} />
           )}
@@ -1117,13 +1126,47 @@ function ToolCallGroup({ tools }: { tools: ToolCallMessage[] }) {
 
 // ── Tool Call Card ──────────────────────────────────────────
 
+const SUBAGENT_TOOLS = new Set(["tide_explore", "tide_research", "tide_dispatch"]);
+
+const SUBAGENT_LABELS: Record<string, string> = {
+  tide_explore: "Codebase Explorer",
+  tide_research: "Web Researcher",
+  tide_dispatch: "Parallel Dispatch",
+};
+
+function parseSubagentSummary(resultJson?: string): { tokens?: string; successCount?: number; totalCount?: number } | null {
+  if (!resultJson) return null;
+  // Match dispatch header: "## Dispatch Results (X/Y succeeded, N tokens)"
+  const match = resultJson.match(/(\d+)\/(\d+) succeeded,\s*([\d,.]+[kM]?)\s*tokens?/);
+  if (match) {
+    return {
+      successCount: parseInt(match[1]),
+      totalCount: parseInt(match[2]),
+      tokens: match[3],
+    };
+  }
+  return null;
+}
+
+function parseSubagentModel(resultJson?: string): string | null {
+  if (!resultJson) return null;
+  // Match "model: provider/model-name" in result text
+  const match = resultJson.match(/model:\s*(?:\w+\/)?(\S+)/);
+  return match ? match[1] : null;
+}
+
 const ToolCallCard = React.memo(function ToolCallCard({ tool }: { tool: ToolCallMessage }) {
   const [expanded, setExpanded] = useState(false);
+  const isSubagent = SUBAGENT_TOOLS.has(tool.toolName);
+  const subagentLabel = SUBAGENT_LABELS[tool.toolName];
 
   const statusCls =
     tool.status === "running" ? css.toolCardRunning
     : tool.status === "error" ? css.toolCardError
     : css.toolCardDone;
+
+  const summary = isSubagent && tool.status === "completed" ? parseSubagentSummary(tool.resultJson) : null;
+  const subagentModel = isSubagent && tool.status === "completed" ? parseSubagentModel(tool.resultJson) : null;
 
   return (
     <div className={css.messageEnter} style={s.toolRow}>
@@ -1140,12 +1183,36 @@ const ToolCallCard = React.memo(function ToolCallCard({ tool }: { tool: ToolCall
               {tool.status === "error" ? "\u2717" : "\u2713"}
             </span>
           )}
-          <span style={s.toolName}>{tool.toolName}</span>
+          <span style={s.toolName}>{subagentLabel || tool.toolName}</span>
+          {subagentModel && (
+            <span style={s.subagentModel}>{subagentModel}</span>
+          )}
+          {summary && (
+            <span style={s.subagentMeta}>
+              {summary.successCount}/{summary.totalCount} ok
+              {summary.tokens ? ` \u00b7 ${summary.tokens} tokens` : ""}
+            </span>
+          )}
           {tool.durationMs != null && (
-            <span style={s.toolDuration}>{tool.durationMs}ms</span>
+            <span style={s.toolDuration}>{tool.durationMs < 1000 ? `${tool.durationMs}ms` : `${(tool.durationMs / 1000).toFixed(1)}s`}</span>
           )}
           <span style={s.toolChevron}>{expanded ? "\u25BC" : "\u25B6"}</span>
         </div>
+
+        {/* Subagent: show live progress while running */}
+        {isSubagent && tool.status === "running" && tool.resultJson && (
+          <div style={s.subagentProgress}>
+            {tool.resultJson}
+          </div>
+        )}
+
+        {/* Subagent: show result preview when completed */}
+        {isSubagent && tool.status === "completed" && tool.resultJson && !summary && (
+          <div style={s.subagentProgress}>
+            {tool.resultJson.split("\n").find(l => l.trim() && !l.startsWith("#") && !l.startsWith("*Status")) || "Done"}
+          </div>
+        )}
+
         {expanded && (
           <div className={css.toolDetails}>
             {tool.argsJson && tool.argsJson !== "{}" && (
@@ -1157,7 +1224,7 @@ const ToolCallCard = React.memo(function ToolCallCard({ tool }: { tool: ToolCall
             {tool.resultJson && (
               <div style={s.toolDetailBlock}>
                 <span style={s.toolDetailLabel}>Result</span>
-                <pre style={s.toolDetailPre}>{formatJson(tool.resultJson)}</pre>
+                <pre style={s.toolDetailPre}>{isSubagent ? tool.resultJson : formatJson(tool.resultJson)}</pre>
               </div>
             )}
             {tool.error && (
@@ -1362,6 +1429,9 @@ const s: Record<string, React.CSSProperties> = {
   toolName: { fontFamily: "var(--font-mono)", fontSize: "var(--font-size-xs)", color: "var(--text-bright)", flex: 1 },
   toolDuration: { fontFamily: "var(--font-mono)", fontSize: "var(--font-size-xs)", color: "var(--text-secondary)" },
   toolChevron: { fontSize: 8, color: "var(--text-secondary)", marginLeft: 2 },
+  subagentProgress: { padding: "4px 10px 6px", fontSize: "var(--font-size-xs)", fontFamily: "var(--font-mono)", color: "var(--text-secondary)", borderTop: "1px solid var(--border)", lineHeight: 1.4 },
+  subagentMeta: { fontFamily: "var(--font-mono)", fontSize: "var(--font-size-xs)", color: "var(--accent)", marginLeft: 4, opacity: 0.85 },
+  subagentModel: { fontFamily: "var(--font-mono)", fontSize: "var(--font-size-xs)", color: "var(--text-secondary)", marginLeft: 4, opacity: 0.7 },
   toolDetailBlock: { display: "flex", flexDirection: "column", gap: 2, marginTop: 6 },
   toolDetailLabel: { fontSize: "var(--font-size-xs)", fontFamily: "var(--font-ui)", fontWeight: 600, color: "var(--text-secondary)", textTransform: "uppercase" as const, letterSpacing: "0.3px" },
   toolDetailPre: { fontFamily: "var(--font-mono)", fontSize: "var(--font-size-xs)", lineHeight: 1.4, color: "var(--text-primary)", background: "var(--bg-primary)", padding: 8, borderRadius: "var(--radius-sm)", margin: 0, overflowX: "auto" as const, maxHeight: 120, whiteSpace: "pre-wrap" as const, wordBreak: "break-word" as const },

@@ -1,8 +1,8 @@
 # Tide
 
-An AI-native code editor with orchestrated multi-step workflows, built on [Tauri v2](https://v2.tauri.app) and the [Pi coding agent](https://shittycodingagent.ai).
+An AI-native code editor with orchestrated multi-step workflows and multi-agent collaboration, built on [Tauri v2](https://v2.tauri.app) and the [Pi coding agent](https://shittycodingagent.ai) (v0.66.1).
 
-Tide wraps Pi as a sidecar process, adding a full IDE around it: Monaco editor, file tree, integrated terminal, codebase indexing, project memory, and an orchestration engine that breaks complex tasks into plan-build-review pipelines.
+Tide wraps Pi as a sidecar process, adding a full IDE around it: Monaco editor, file tree, integrated terminal, codebase indexing, project memory, an orchestration engine that breaks complex tasks into plan-build-review pipelines, and an Agent Experts mode where multiple AI agents brainstorm together via peer-to-peer messaging.
 
 ## What Makes Tide Different
 
@@ -20,7 +20,11 @@ Tide wraps Pi as a sidecar process, adding a full IDE around it: Monaco editor, 
 
 **Editable editor** -- Full read-write Monaco editor with Cmd+S save, dirty state tracking, and Tokyo Night theme. Not just a viewer.
 
-**Configurable everything** -- Review mode, QA commands, clarify timeouts, model lock during orchestration, tier model preferences -- all configurable per-project via `.tide/orchestrator-config.json` and `.tide/router-config.json`.
+**Agent Experts** -- Assemble teams of expert agents (architect, security, performance, UX, devil's advocate) that brainstorm together via peer-to-peer messaging. Each expert has its own model, temperature, and system prompt. Experts explore code, share findings, challenge each other's reasoning, and produce a synthesized recommendation. Configurable time limits with automatic convergence. Feed the synthesis directly into the orchestration pipeline.
+
+**Subagents** -- Spawn isolated Pi processes for codebase exploration and web research. Results are summarized before returning to the main agent's context, preventing context pollution. Run multiple tasks in parallel with concurrency limiting.
+
+**Configurable everything** -- Review mode, QA commands, clarify timeouts, model lock during orchestration, tier model preferences, expert teams -- all configurable per-project via `.tide/orchestrator-config.json`, `.tide/router-config.json`, and `.tide/experts/`.
 
 ## How It Works
 
@@ -31,24 +35,25 @@ Tide wraps Pi as a sidecar process, adding a full IDE around it: Monaco editor, 
 |   Tauri (Rust)   | <-----------------------------> |   Pi Agent       |
 |                  |                                  |   (Node.js)      |
 |  - Orchestrator  |     Tauri Events                 |  - LLM calls     |
-|  - Tree-sitter   | ------------------------------>  |  - Tool use      |
-|  - Git (libgit2) |                                  |  - Sessions      |
-|  - PTY terminal  |     +--- Pi Extensions ---+      |  - Compaction    |
-|  - Keychain      |     | tide-router.ts      |      +------------------+
-|  - SQLite index  |     | tide-planner.ts     |
-+------------------+     | tide-index.ts       |
-        |                 | tide-safety.ts      |
-   Tauri Events           | tide-project.ts     |
-        |                 | tide-session.ts     |
-        v                 | tide-classify.ts    |
-+------------------+      | tide-web-search.ts  |
-|   React UI       |      +--------------------+
-|  - Monaco Editor |
-|  - Agent Chat    |
+|  - Experts Mgr   | ------------------------------>  |  - Tool use      |
+|  - Tree-sitter   |                                  |  - Sessions      |
+|  - Git (libgit2) |     +--- Pi Extensions ----+     |  - Compaction    |
+|  - PTY terminal  |     | tide-router.ts       |     +------------------+
+|  - Keychain      |     | tide-planner.ts      |
+|  - SQLite index  |     | tide-index.ts        |     +------------------+
++------------------+     | tide-safety.ts       |     | Expert Agents    |
+        |                 | tide-project.ts      |     |  (Pi processes)  |
+   Tauri Events           | tide-session.ts      |     |                  |
+        |                 | tide-classify.ts     |     | P2P via mailbox  |
+        v                 | tide-web-search.ts   |     | files in .tide/  |
++------------------+      | tide-subagent.ts     |     | experts/sessions |
+|   React UI       |      | tide-experts.ts      |     +------------------+
+|  - Monaco Editor |      | tide-expert-comms.ts |
+|  - Agent Chat    |      | tide-agent-utils.ts  |
+|  - Experts Panel |      +---------------------+
 |  - File Tree     |
 |  - Terminal      |
 |  - Settings      |
-|  - Dashboard     |
 +------------------+
 ```
 
@@ -58,12 +63,12 @@ Tide runs Pi as a sidecar process in RPC mode. On startup:
 
 1. **Sidecar resolution** -- Rust finds the Pi binary: checks `binaries/pi-sidecar-{target-triple}` (production bundle), then `node_modules` (dev), then PATH
 2. **API key injection** -- Reads keys from macOS Keychain, injects as environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `TAVILY_API_KEY`). Pi also supports OAuth2 login for subscription providers (ChatGPT Plus/Pro Codex, Claude Pro/Max, GitHub Copilot, Gemini CLI) with credentials cached in `~/.pi/agent/auth.json`.
-3. **Extension loading** -- Passes 8 custom extensions via `-e` flags
+3. **Extension loading** -- Passes 12 custom extensions via `-e` flags
 4. **JSON-RPC bridge** -- Rust reads Pi's stdout line-by-line, parses events, and emits them as Tauri events to the React frontend
 
 Pi retains full ownership of: LLM interaction, tool execution (read/write/edit/bash/grep), session management (JSONL tree structure, auto-compaction), and the agent loop.
 
-Tide adds on top: orchestration (multi-step pipelines), the codebase index, project memory, session intelligence, native git/terminal, and the full IDE UI.
+Tide adds on top: orchestration (multi-step pipelines), multi-agent expert brainstorming, subagent dispatch, the codebase index, project memory, session intelligence, native git/terminal, and the full IDE UI.
 
 ### Codebase Indexing
 
@@ -89,6 +94,21 @@ When you send a complex prompt (detected automatically or forced with Cmd+Enter)
 
 All orchestration settings are configurable per-project in `.tide/orchestrator-config.json`.
 
+### Agent Experts
+
+Tide includes a multi-agent brainstorming mode where teams of expert agents collaborate:
+
+1. **Team setup** -- Select a pre-configured team (e.g., "Code Review Team" with architect, security, and performance experts) or create custom teams in Settings. Each expert has its own model, temperature, and system prompt.
+2. **Exploration** -- All experts are spawned as persistent Pi processes in RPC mode. Each independently analyzes the task, reading code and using tools.
+3. **P2P discussion** -- Experts communicate directly via file-based mailboxes in `.tide/experts/sessions/{id}/mailboxes/`. They send observations, ask questions, challenge assumptions, and share findings on a shared board.
+4. **Time-limited convergence** -- A configurable time limit (default 10 minutes) ensures sessions converge. At 80% elapsed, agents are warned to wrap up. At 100%, the judge agent is forced to synthesize.
+5. **Synthesis** -- The designated judge expert reads all messages and findings, producing a structured synthesis: consensus, disagreements, recommendations, action items, and risk level.
+6. **Execution** -- The synthesis can be fed directly into the orchestration pipeline, giving the planner the full benefit of multi-expert analysis.
+
+The Experts tab in the agent panel shows real-time activity across three views: grid (card overview), timeline (chronological P2P messages), and conversation (threaded chat between agents).
+
+Expert teams and individual expert configurations are stored in `.tide/experts/teams/` and `.tide/experts/experts/`. Five default experts ship out of the box: System Architect, Security Reviewer, Performance Engineer, UX/API Designer, and Devil's Advocate.
+
 ### Session Intelligence
 
 Tide remembers what happened across sessions:
@@ -104,11 +124,18 @@ Tide remembers what happened across sessions:
 tide_code/
   packages/shared/          # Shared types (Zod schemas)
   apps/desktop/
-    pi-extensions/          # 8 Pi extensions (routing, planning, indexing, memory, etc.)
-    src/                    # React frontend (17 Zustand stores, 30+ components)
-    src-tauri/src/          # Rust backend (orchestrator, sidecar, git, pty, indexer)
+    pi-extensions/          # 12 Pi extensions (routing, planning, indexing, experts, etc.)
+      expert-defaults/      # Default expert presets and team templates
+    src/                    # React frontend (18 Zustand stores, 40+ components)
+      components/
+        ExpertsPanel/       # Expert brainstorming UI (6 components)
+    src-tauri/src/          # Rust backend (orchestrator, experts, sidecar, git, pty, indexer)
   scripts/                  # Build, release, sidecar prep scripts
   .tide/                    # Per-project data (index.db, config, memory, sessions, plans)
+    experts/                # Expert teams, definitions, and session data
+      teams/                # Team templates (JSON)
+      experts/              # Individual expert definitions (Markdown + YAML frontmatter)
+      sessions/             # Past brainstorming sessions with mailbox directories
 ```
 
 See [PROJECT.md](./PROJECT.md) for the complete file-by-file structure.

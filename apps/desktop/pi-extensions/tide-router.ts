@@ -12,22 +12,73 @@ function log(msg: string) {
   process.stderr.write(`[tide:router] ${msg}\n`);
 }
 
-// ── Model Pattern Matching ──────────────────────────────────
+// ── Non-chat model exclusion (API-based, not pattern-based) ─
 
-const QUICK_MODEL_PATTERNS = ["flash", "4o-mini", "haiku", "lite", "instant"];
-// Order matters: strongest coding models first (Codex > Opus > reasoning > base)
-const COMPLEX_MODEL_PATTERNS = ["5.3-codex", "5.2-codex", "5-codex", "codex", "opus", "o3-pro", "o1-pro", "gpt-5"];
-const EXCLUDED_MODEL_PATTERNS = ["codex-mini", "embedding", "tts", "whisper", "dall-e", "moderation"];
+const EXCLUDED_API_PATTERNS = ["embedding", "tts", "whisper", "moderation", "image", "dall-e"];
+
+function isChatModel(m: { id: string; api?: string }): boolean {
+  const lower = (m.id + " " + (m.api || "")).toLowerCase();
+  return !EXCLUDED_API_PATTERNS.some((p) => lower.includes(p));
+}
+
+// ── Cost-based model derivation ─────────────────────────────
+// Instead of hardcoded model name patterns, derive tier defaults
+// from model metadata (cost as proxy for capability).
+
+interface ModelWithMeta {
+  id: string;
+  name: string;
+  provider: string;
+  cost?: { input?: number; output?: number };
+  contextWindow?: number;
+}
+
+function deriveDefaults(models: ModelWithMeta[]): { quick?: ModelWithMeta; standard?: ModelWithMeta; complex?: ModelWithMeta } {
+  if (models.length === 0) return {};
+  if (models.length === 1) return { quick: models[0], standard: models[0], complex: models[0] };
+
+  // Sort by output cost (highest = most capable). Fall back to contextWindow, then name.
+  const sorted = [...models].sort((a, b) => {
+    const costA = a.cost?.output ?? 0;
+    const costB = b.cost?.output ?? 0;
+    if (costA !== costB) return costB - costA; // most expensive first
+    const ctxA = a.contextWindow ?? 0;
+    const ctxB = b.contextWindow ?? 0;
+    if (ctxA !== ctxB) return ctxB - ctxA; // larger context first
+    return a.id.localeCompare(b.id);
+  });
+
+  const complex = sorted[0];
+  const quick = sorted[sorted.length - 1];
+  const mid = Math.floor(sorted.length / 2);
+  const standard = sorted[mid] || complex;
+
+  return { quick, standard, complex };
+}
 
 // ── Router Config ───────────────────────────────────────────
+
+interface ModelRef {
+  provider: string;
+  id: string;
+}
 
 interface RouterConfig {
   enabled: boolean;
   autoSwitch?: boolean;
   tierModels?: {
-    quick?: { provider: string; id: string };
-    standard?: { provider: string; id: string };
-    complex?: { provider: string; id: string };
+    quick?: ModelRef;
+    standard?: ModelRef;
+    complex?: ModelRef;
+  };
+  orchestratorModels?: {
+    codeEditing?: ModelRef;
+    research?: ModelRef;
+    validation?: ModelRef;
+  };
+  subagentModels?: {
+    webSearch?: ModelRef;
+    codebaseExploration?: ModelRef;
   };
 }
 
@@ -75,10 +126,55 @@ function loadPersistedRouterState(cwd: string): RouterState | null {
   return null;
 }
 
+// ── Dynamic Tool Loading ────────────────────────────────────
+// Scope active tools by task complexity to reduce context overhead.
+
+const QUICK_TOOLS = [
+  // Pi built-ins
+  "read", "bash", "edit", "write", "grep", "find", "ls",
+  // Essential Tide tools
+  "web_search", "web_extract",
+];
+
+const STANDARD_TOOLS = [
+  ...QUICK_TOOLS,
+  // Index tools for codebase navigation
+  "tide_index_file_tree", "tide_index_file_outline", "tide_index_get_symbol",
+  "tide_index_search", "tide_index_repo_outline",
+  // Subagent tools
+  "tide_explore", "tide_research", "tide_dispatch",
+];
+
+// complex/orchestrated: all tools (no filtering)
+
+function scopeToolsForTier(pi: ExtensionAPI, tier: Tier, isOrchestrated: boolean): void {
+  if (isOrchestrated) {
+    // Orchestrated prompts get all tools
+    return;
+  }
+
+  try {
+    if (tier === "quick") {
+      const allTools = pi.getAllTools().map((t: any) => t.name || t);
+      const activeSet = QUICK_TOOLS.filter((t) => allTools.includes(t));
+      pi.setActiveTools(activeSet);
+      log(`Scoped tools for quick tier: ${activeSet.length} tools`);
+    } else if (tier === "standard") {
+      const allTools = pi.getAllTools().map((t: any) => t.name || t);
+      const activeSet = STANDARD_TOOLS.filter((t) => allTools.includes(t));
+      pi.setActiveTools(activeSet);
+      log(`Scoped tools for standard tier: ${activeSet.length} tools`);
+    }
+    // complex: don't filter, use all tools
+  } catch (err) {
+    log(`Failed to scope tools: ${err}`);
+  }
+}
+
 // ── Extension ───────────────────────────────────────────────
 
 export default function tideRouter(pi: ExtensionAPI) {
-  log("Extension registered (first-message routing + classification)");
+  log("Extension registered (first-message routing + cost-based derivation)");
 
   // Restore persisted state on session start (survives Pi restarts)
   pi.on("session_start", async (_event, ctx) => {
@@ -105,13 +201,24 @@ export default function tideRouter(pi: ExtensionAPI) {
 
     // Skip routing for orchestrated prompts — the orchestrator manages model selection.
     // The [tide:orchestrated] marker is prepended by the Rust orchestrator.
-    if (prompt.trimStart().startsWith("[tide:orchestrated]")) {
+    const isOrchestrated = prompt.trimStart().startsWith("[tide:orchestrated]");
+    if (isOrchestrated) {
       log("Orchestrated prompt detected, skipping routing");
+      return;
+    }
+
+    // Skip routing for expert brainstorming prompts — needs full toolset available.
+    const isExperts = prompt.trimStart().startsWith("[tide:experts]");
+    if (isExperts) {
+      log("Expert brainstorming prompt detected, skipping routing");
       return;
     }
 
     const { tier, reason } = classifyPrompt(prompt, ctx.cwd);
     log(`Classified as ${tier}: ${reason}`);
+
+    // Dynamic tool scoping based on tier
+    scopeToolsForTier(pi, tier, isOrchestrated);
 
     if (!config.autoSwitch) {
       log(`Auto-switch disabled, using current model (tier: ${tier})`);
@@ -139,10 +246,7 @@ export default function tideRouter(pi: ExtensionAPI) {
     // ── Find target model ─────────────────────────────────
     const available = ctx.modelRegistry.getAvailable();
     log(`Model registry: ${available.length} available models`);
-    const chatModels = available.filter((m) => {
-      const lower = m.id.toLowerCase();
-      return !EXCLUDED_MODEL_PATTERNS.some((p) => lower.includes(p));
-    });
+    const chatModels = available.filter(isChatModel);
 
     if (chatModels.length === 0) {
       log("No available chat models, skipping routing");
@@ -150,35 +254,20 @@ export default function tideRouter(pi: ExtensionAPI) {
     }
     log(`Chat models: ${chatModels.map(m => `${m.provider}/${m.id}`).join(", ")}`);
 
-    // Check for explicit tier→model mapping
+    // Check for explicit tier→model mapping in config
     const explicitMapping = config.tierModels?.[tier];
     let target = explicitMapping
       ? ctx.modelRegistry.find(explicitMapping.provider, explicitMapping.id)
       : undefined;
 
-    // Auto-resolve if no explicit mapping
+    // Auto-resolve using cost-based derivation if no explicit mapping
     if (!target) {
-      const quick = chatModels.filter((m) =>
-        QUICK_MODEL_PATTERNS.some((p) => m.id.toLowerCase().includes(p)),
-      );
-      const complex = chatModels.filter((m) =>
-        COMPLEX_MODEL_PATTERNS.some((p) => m.id.toLowerCase().includes(p)),
-      );
-      // Sort complex models by pattern priority (earlier in COMPLEX_MODEL_PATTERNS = higher priority)
-      complex.sort((a, b) => {
-        const aIdx = COMPLEX_MODEL_PATTERNS.findIndex((p) => a.id.toLowerCase().includes(p));
-        const bIdx = COMPLEX_MODEL_PATTERNS.findIndex((p) => b.id.toLowerCase().includes(p));
-        return aIdx - bIdx;
-      });
-      const standard = chatModels.filter((m) => {
-        const lower = m.id.toLowerCase();
-        return !QUICK_MODEL_PATTERNS.some((p) => lower.includes(p))
-          && !COMPLEX_MODEL_PATTERNS.some((p) => lower.includes(p));
-      });
-
-      if (tier === "quick") target = quick[0] || standard[0] || chatModels[0];
-      else if (tier === "complex") target = complex[0] || standard[0] || chatModels[0];
-      else target = standard[0] || chatModels[0];
+      const defaults = deriveDefaults(chatModels as ModelWithMeta[]);
+      const derived = defaults[tier];
+      if (derived) {
+        target = ctx.modelRegistry.find(derived.provider, derived.id);
+        log(`Cost-derived ${tier} model: ${derived.provider}/${derived.id}`);
+      }
     }
 
     if (!target) {
@@ -200,12 +289,12 @@ export default function tideRouter(pi: ExtensionAPI) {
     log(`Switching: ${currentModel?.provider}/${currentModel?.id} → ${target.provider}/${target.id} (tier: ${tier})`);
     const success = await trySetModel(pi, target);
     if (success) {
-      log(`✓ Switched to ${target.provider}/${target.id} for ${tier} tier`);
+      log(`Switched to ${target.provider}/${target.id} for ${tier} tier`);
       currentRouterState = { sessionId, routedModel: { provider: target.provider, id: target.id }, tier };
       persistRouterState(ctx.cwd, currentRouterState);
     } else {
       // Fallback chain: try other tiers' models
-      log(`✗ Failed to switch to ${target.provider}/${target.id}, trying fallback chain...`);
+      log(`Failed to switch to ${target.provider}/${target.id}, trying fallback chain...`);
       const fallbackModels = chatModels.filter(
         (m) => m.provider !== target!.provider || m.id !== target!.id
       );
@@ -214,7 +303,7 @@ export default function tideRouter(pi: ExtensionAPI) {
       for (const fallback of fallbackModels) {
         log(`Trying fallback: ${fallback.provider}/${fallback.id}`);
         if (await trySetModel(pi, fallback)) {
-          log(`✓ Fallback succeeded: ${fallback.provider}/${fallback.id}`);
+          log(`Fallback succeeded: ${fallback.provider}/${fallback.id}`);
           currentRouterState = { sessionId, routedModel: { provider: fallback.provider, id: fallback.id }, tier };
           persistRouterState(ctx.cwd, currentRouterState);
           fallbackSuccess = true;
@@ -223,7 +312,7 @@ export default function tideRouter(pi: ExtensionAPI) {
       }
 
       if (!fallbackSuccess) {
-        log(`✗ All fallbacks failed, staying on current model`);
+        log(`All fallbacks failed, staying on current model`);
         if (current) {
           currentRouterState = { sessionId, routedModel: { provider: current.provider, id: current.id }, tier };
           persistRouterState(ctx.cwd, currentRouterState);

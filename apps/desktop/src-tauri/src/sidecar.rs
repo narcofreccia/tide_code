@@ -70,6 +70,9 @@ pub async fn start_pi(
         cmd.arg("--provider").arg(provider);
     }
 
+    // Expose Pi binary path so extensions (e.g. tide-subagent) can spawn subprocesses
+    cmd.env("TIDE_PI_BINARY", &pi_path);
+
     cmd.current_dir(workspace_root);
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());

@@ -154,6 +154,7 @@ impl Orchestrator {
     pub async fn run(
         &self,
         prompt: String,
+        expert_context: Option<String>,
         pi_handle: PiHandle,
         app_handle: tauri::AppHandle,
         agent_end_notify: Arc<Notify>,
@@ -167,6 +168,13 @@ impl Orchestrator {
         });
         pi_handle.send(&auto_compact_cmd).await.ok();
 
+        // Enable auto-retry so transient 429/5xx errors don't fail steps
+        let auto_retry_cmd = serde_json::json!({
+            "type": "set_auto_retry",
+            "enabled": true
+        });
+        pi_handle.send(&auto_retry_cmd).await.ok();
+
         // ── Phase: Routing ──────────────────────────────────
         Self::check_cancelled(&cancel)?;
         self.emit_phase(&app_handle, OrcPhase::Routing, None, 0, 0, "Classifying task...");
@@ -175,7 +183,7 @@ impl Orchestrator {
         Self::check_cancelled(&cancel)?;
         self.emit_phase(&app_handle, OrcPhase::Planning, None, 0, 0, "Creating implementation plan...");
 
-        let planning_prompt = self.build_planning_prompt(&prompt);
+        let planning_prompt = self.build_planning_prompt(&prompt, &expert_context);
         self.send_and_wait(&pi_handle, &planning_prompt, &agent_end_notify).await?;
 
         // Read the plan that was just created from disk
@@ -276,12 +284,17 @@ impl Orchestrator {
         }
 
         // ── Phase: Complete ─────────────────────────────────
-        // Restore auto-compaction to default (off)
-        let restore_cmd = serde_json::json!({
+        // Restore auto-compaction and auto-retry to defaults (off)
+        let restore_compact_cmd = serde_json::json!({
             "type": "set_auto_compaction",
             "enabled": false
         });
-        pi_handle.send(&restore_cmd).await.ok();
+        pi_handle.send(&restore_compact_cmd).await.ok();
+        let restore_retry_cmd = serde_json::json!({
+            "type": "set_auto_retry",
+            "enabled": false
+        });
+        pi_handle.send(&restore_retry_cmd).await.ok();
 
         let final_plan = self.load_plan_by_id(&plan_id)?;
         self.emit_phase(
@@ -736,9 +749,48 @@ impl Orchestrator {
         "[tide:orchestrated]\n"
     }
 
+    /// Load model guidance from .tide/router-config.json orchestratorModels.
+    /// If configured, returns specific model references; otherwise returns generic guidance.
+    fn load_model_guidance(&self) -> String {
+        let config_path = std::path::PathBuf::from(&self.workspace_root)
+            .join(".tide")
+            .join("router-config.json");
+
+        if let Ok(content) = std::fs::read_to_string(&config_path) {
+            if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(orc) = config.get("orchestratorModels") {
+                    let mut lines = Vec::new();
+                    if let Some(ce) = orc.get("codeEditing") {
+                        if let (Some(p), Some(id)) = (ce.get("provider").and_then(|v| v.as_str()), ce.get("id").and_then(|v| v.as_str())) {
+                            lines.push(format!("- Code editing, refactoring, bug fixes → use {{ provider: \"{}\", id: \"{}\" }}", p, id));
+                        }
+                    }
+                    if let Some(r) = orc.get("research") {
+                        if let (Some(p), Some(id)) = (r.get("provider").and_then(|v| v.as_str()), r.get("id").and_then(|v| v.as_str())) {
+                            lines.push(format!("- Research, analysis, planning → use {{ provider: \"{}\", id: \"{}\" }}", p, id));
+                        }
+                    }
+                    if let Some(v) = orc.get("validation") {
+                        if let (Some(p), Some(id)) = (v.get("provider").and_then(|v| v.as_str()), v.get("id").and_then(|v| v.as_str())) {
+                            lines.push(format!("- Simple validation, build checks → use {{ provider: \"{}\", id: \"{}\" }}", p, id));
+                        }
+                    }
+                    if !lines.is_empty() {
+                        return lines.join("\n                ") + "\n                ";
+                    }
+                }
+            }
+        }
+
+        // Fallback: generic guidance (no hardcoded model names)
+        "- Code editing, refactoring, bug fixes → strongest available coding model\n                \
+         - Research, analysis, planning → standard model\n                \
+         - Simple validation, build checks → lightweight/fast model\n                ".to_string()
+    }
+
     // ── Prompt Builders ─────────────────────────────────────
 
-    fn build_planning_prompt(&self, user_prompt: &str) -> String {
+    fn build_planning_prompt(&self, user_prompt: &str, expert_context: &Option<String>) -> String {
         // Check if research cache exists from a previous planning session
         let research_path = std::path::PathBuf::from(&self.workspace_root)
             .join(".tide")
@@ -769,12 +821,19 @@ impl Orchestrator {
             "2. Ask clarifying questions using `tide_plan_clarify` if there are ambiguities\n".to_string()
         };
 
+        // Load router config for model guidance
+        let model_guidance = self.load_model_guidance();
+
         let marker = self.orc_marker();
         format!(
             "{marker}\
              You are in PLANNING MODE. Do NOT implement anything yet.\n\n\
              Follow these steps:\n\
-             1. Explore the codebase to understand the current architecture\n\
+             1. Use `tide_dispatch` to explore the codebase AND search for relevant documentation in parallel:\n\
+                - Use \"explore\" tasks for architecture, patterns, and file discovery\n\
+                - Use \"research\" tasks for API docs, library references, and best practices\n\
+                Results arrive summarized without polluting your context. If `tide_dispatch` is unavailable, \
+                explore manually using `tide_index_*` tools or `read`/`grep`.\n\
              {clarify_instruction}\
              3. Create a detailed implementation plan using `tide_plan_create`. Each step MUST:\n\
                 - Describe CONCRETE code changes (what functions/components to add, modify, or refactor)\n\
@@ -783,21 +842,32 @@ impl Orchestrator {
                 - Be atomic: one logical change per step, small enough for a single agent turn\n\
                 - NOT be \"write a spec\" or \"create documentation\" unless the user explicitly asked for docs\n\
              4. For each step, set the `assignedModel` field to right-size the model:\n\
-                - Code editing, refactoring, bug fixes → strongest coding model (prefer IDs containing \"codex\" or \"opus\")\n\
-                - Research, analysis, planning → standard model (prefer IDs containing \"gpt-5\" or \"sonnet\")\n\
-                - Simple validation, build checks → lightweight model (prefer IDs containing \"flash\", \"haiku\", or \"mini\")\n\
-                Use format: {{ provider: \"openai\", id: \"gpt-5.2-codex\", name: \"GPT-5.2 Codex\" }}\n\
+                {model_guidance}\
+                Use format: {{ provider: \"<provider>\", id: \"<model-id>\", name: \"<display-name>\" }}\n\
              5. Write a research summary to `.tide/research.md` capturing:\n\
                 - Key file paths and their roles\n\
                 - Existing patterns and conventions found\n\
                 - Architecture decisions relevant to this task\n\
                 This cache helps future build steps avoid re-exploring the codebase.\n\n\
              {research_context}\
+             {expert_section}\
              ## Original Request\n\n\
              {user_prompt}\n\n\
              IMPORTANT: Only explore, plan, and write research.md. Do NOT implement any code changes.",
             clarify_instruction = clarify_instruction,
+            model_guidance = model_guidance,
             research_context = research_context,
+            expert_section = match expert_context {
+                Some(ctx) => format!(
+                    "## Expert Analysis\n\n\
+                     The following synthesis was produced by a team of expert agents:\n\n\
+                     {}\n\n\
+                     Use this analysis to inform your planning. Address the concerns raised \
+                     and incorporate the suggestions where appropriate.\n\n",
+                    ctx
+                ),
+                None => String::new(),
+            },
             user_prompt = user_prompt,
         )
     }

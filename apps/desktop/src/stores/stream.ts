@@ -11,6 +11,20 @@ function getOrcPhase() {
   return useOrchestrationStore.getState().phase;
 }
 
+/** Extract readable text from Pi tool result content arrays.
+ *  Pi returns `{ content: [{ type: "text", text: "..." }], details?: {...} }` */
+function extractToolResultText(result: any): string {
+  if (typeof result === "string") return result;
+  if (result?.content && Array.isArray(result.content)) {
+    const text = result.content
+      .filter((p: any) => p.type === "text" && p.text)
+      .map((p: any) => p.text)
+      .join("\n");
+    if (text) return text;
+  }
+  return JSON.stringify(result);
+}
+
 // ── Message Types ───────────────────────────────────────────
 
 export interface UserMessage {
@@ -65,6 +79,11 @@ export interface AvailableModel {
   id: string;
   name: string;
   provider: string;
+  api?: string;
+  reasoning?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+  cost?: { input: number; output: number };
 }
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -179,6 +198,9 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   _pendingForkRestore: false,
 
   addUserMessage: (content: string) => {
+    // Hide expert brainstorming prompts from the main chat
+    if (content.trimStart().startsWith("[tide:experts]")) return;
+
     set((state) => ({
       messages: [
         ...state.messages,
@@ -192,7 +214,10 @@ export const useStreamStore = create<StreamState>((set, get) => ({
     }));
   },
 
-  clearMessages: () => set({ messages: [], hasAutoTitled: false }),
+  clearMessages: () => {
+    set({ messages: [], hasAutoTitled: false });
+    useContextStore.getState().updateFromPiState(0, get().contextWindow);
+  },
 
   handlePiEvent: (event: PiEvent) => {
     // Event trace (only when devtools are open)
@@ -410,6 +435,9 @@ export const useStreamStore = create<StreamState>((set, get) => ({
         const toolName = e.toolName || e.tool_name || "unknown";
         const argsJson = e.args ? JSON.stringify(e.args) : e.argsJson;
 
+        // Hide expert brainstorming tool calls from the main chat — they show in the Experts tab
+        if (toolName === "tide_experts_brainstorm") break;
+
         set((state) => {
           const msgs = [...state.messages];
           // Insert tool call before the thinking indicator (if any)
@@ -441,7 +469,10 @@ export const useStreamStore = create<StreamState>((set, get) => ({
         const callId = e.toolCallId || e.tool_call_id || "";
         const now = Date.now();
         const toolName = String(e.toolName || e.tool_name || "");
-        const resultJson = e.result ? JSON.stringify(e.result) : e.resultJson;
+
+        // Hide expert brainstorming tool results from the main chat
+        if (toolName === "tide_experts_brainstorm") break;
+        const resultJson = e.result ? extractToolResultText(e.result) : e.resultJson;
 
         set((state) => {
           const updatedMessages = state.messages.map((m) =>
@@ -515,6 +546,11 @@ export const useStreamStore = create<StreamState>((set, get) => ({
                   id: String(m.id || m.name || ""),
                   name: String(m.name || m.id || ""),
                   provider: String(m.provider || "unknown"),
+                  api: m.api || undefined,
+                  reasoning: m.reasoning ?? undefined,
+                  contextWindow: m.contextWindow ?? undefined,
+                  maxTokens: m.maxTokens ?? undefined,
+                  cost: m.cost ? { input: m.cost.input ?? 0, output: m.cost.output ?? 0 } : undefined,
                 }));
               set({ availableModels: models });
             } else if (e.data && !e.success) {
@@ -676,8 +712,9 @@ export const useStreamStore = create<StreamState>((set, get) => ({
                   sessionStatus: "active",
                   sessionId: e.data?.sessionId || e.data?.sessionPath || "",
                 });
-                // Context will update when get_messages response arrives with usage.input
+                // Reset context indicator for new session
                 useContextStore.setState({ warningDismissedAt: 0 });
+                useContextStore.getState().updateFromPiState(0, get().contextWindow);
                 getSessionStats().catch(() => {});
               }
             }
@@ -732,6 +769,8 @@ export const useStreamStore = create<StreamState>((set, get) => ({
                       : Array.isArray(msg.content)
                         ? msg.content.filter((p: any) => p.type === "text").map((p: any) => p.text).join("")
                         : "";
+                    // Skip expert brainstorming prompts from restore
+                    if (text.trimStart().startsWith("[tide:experts]")) continue;
                     if (text) {
                       restored.push({ role: "user", id: nextId(), content: text, timestamp: ts });
                     }
@@ -748,6 +787,8 @@ export const useStreamStore = create<StreamState>((set, get) => ({
                     if (Array.isArray(msg.content)) {
                       for (const part of msg.content) {
                         if (part.type === "toolCall" || part.type === "tool_use") {
+                          // Skip expert brainstorming tool calls — they belong in the Experts tab
+                          if (part.name === "tide_experts_brainstorm") continue;
                           restored.push({
                             role: "tool_call",
                             id: nextId(),
@@ -912,6 +953,11 @@ export const useStreamStore = create<StreamState>((set, get) => ({
                 id: String(m.id || m.name || ""),
                 name: String(m.name || m.id || ""),
                 provider: String(m.provider || "unknown"),
+                api: m.api || undefined,
+                reasoning: m.reasoning ?? undefined,
+                contextWindow: m.contextWindow ?? undefined,
+                maxTokens: m.maxTokens ?? undefined,
+                cost: m.cost ? { input: m.cost.input ?? 0, output: m.cost.output ?? 0 } : undefined,
               }));
               if (models.length > 0) set({ availableModels: models });
             }
@@ -930,6 +976,14 @@ export const useStreamStore = create<StreamState>((set, get) => ({
         // Some models don't stream text_delta — the full text arrives here.
         // If text was already streamed via message_update, skip to avoid duplication.
         const endMsg = (event as any).message;
+
+        // Hide expert brainstorming from chat — filter assistant messages containing the tool call
+        if (endMsg?.role === "assistant" && Array.isArray(endMsg?.content)) {
+          const hasExpertTool = endMsg.content.some((p: any) =>
+            (p.type === "toolCall" || p.type === "tool_use") && p.name === "tide_experts_brainstorm"
+          );
+          if (hasExpertTool) break;
+        }
 
         // Surface API errors from the model (e.g. OpenAI 404, rate limits)
         if (endMsg?.stopReason === "error" && endMsg?.errorMessage) {
@@ -1000,12 +1054,8 @@ export const useStreamStore = create<StreamState>((set, get) => ({
           }
         }
 
-        // Update context indicator from the assistant message's actual input token usage.
-        // usage.input = tokens sent to the model = current context window occupancy.
-        if (endMsg?.usage?.input != null) {
-          const ctxWindow = get().contextWindow;
-          useContextStore.getState().updateFromPiState(endMsg.usage.input, ctxWindow);
-        }
+        // Context indicator is updated from agent_end (stable, fires once) rather than
+        // every message_end (fires per turn, causes flickering as context grows mid-agent).
         break;
       }
 
@@ -1102,9 +1152,20 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       case "tool_execution_update": {
         const e = event as any;
         const callId = e.toolCallId || e.tool_call_id || "";
-        const partialResult = e.content || e.text || e.output || e.data || null;
-        if (callId && partialResult) {
-          const text = typeof partialResult === "string" ? partialResult : JSON.stringify(partialResult);
+        // Pi wraps streaming updates in partialResult; also handle flat content for compatibility
+        const partial = e.partialResult || e;
+        const rawContent = partial.content || partial.text || partial.output || partial.data || null;
+        if (callId && rawContent) {
+          // Extract text from content array format [{ type: "text", text: "..." }]
+          let text: string;
+          if (Array.isArray(rawContent)) {
+            text = rawContent
+              .filter((p: any) => p.type === "text" && p.text)
+              .map((p: any) => p.text)
+              .join("\n") || JSON.stringify(rawContent);
+          } else {
+            text = typeof rawContent === "string" ? rawContent : JSON.stringify(rawContent);
+          }
           set((state) => ({
             messages: state.messages.map((m) =>
               m.role === "tool_call" && m.toolCallId === callId

@@ -219,28 +219,7 @@ export default function tideProject(pi: ExtensionAPI) {
       usedTokens += estimateTokens(section);
     }
 
-    // 3. Active feature plan (if exists)
-    const plansDir = path.join(workspaceRoot, ".tide", "plans");
-    if (fs.existsSync(plansDir)) {
-      try {
-        const planFiles = fs.readdirSync(plansDir)
-          .filter((f) => f.endsWith(".json"))
-          .sort()
-          .reverse();
-        for (const pf of planFiles) {
-          const plan = JSON.parse(fs.readFileSync(path.join(plansDir, pf), "utf-8"));
-          if (plan.status === "in_progress" || plan.steps?.some((s: any) => s.status === "pending")) {
-            const section = `## Active Plan: ${plan.title}\n\n${plan.description}\n\nSteps: ${plan.steps?.map((s: any) => `${s.status === "completed" ? "[x]" : "[ ]"} ${s.title}`).join(", ")}`;
-            const tokens = estimateTokens(section);
-            if (usedTokens + tokens < contextBudget) {
-              parts.push(section);
-              usedTokens += tokens;
-            }
-            break;
-          }
-        }
-      } catch { /* ignore */ }
-    }
+    // 3. Active plan context is handled by tide-planner.ts — skip here to avoid duplication
 
     // 4. Project memory — trimmable
     const memory = loadMemory(workspaceRoot);
