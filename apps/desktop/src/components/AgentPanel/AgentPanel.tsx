@@ -379,6 +379,25 @@ function isComplexPrompt(text: string): boolean {
 
 export function AgentPanel() {
   const [activeTab, setActiveTab] = useState<TabId>("chat");
+
+  // Listen for tab switch requests from other components (e.g., Experts → Chat)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const tab = (e as CustomEvent).detail;
+      if (tab) {
+        setActiveTab(tab);
+        // Scroll to latest message when switching to chat
+        if (tab === "chat") {
+          setTimeout(() => {
+            scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+          }, 100);
+        }
+      }
+    };
+    window.addEventListener("tide:switch-tab", handler);
+    return () => window.removeEventListener("tide:switch-tab", handler);
+  }, []);
+
   const [images, setImages] = useState<ImageAttachment[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [showSessions, setShowSessions] = useState(false);

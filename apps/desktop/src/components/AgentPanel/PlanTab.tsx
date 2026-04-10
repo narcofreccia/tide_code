@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { usePlanStore, type Plan, type PlanStep } from "../../stores/planStore";
 import { useWorkspaceStore } from "../../stores/workspace";
+import { useOrchestrationStore } from "../../stores/orchestrationStore";
 import { openFileByPath } from "../../lib/fileHelpers";
+import { orchestrate, newSession } from "../../lib/ipc";
 
 // ── Status Icons ────────────────────────────────────────────
 
@@ -228,6 +230,9 @@ export function PlanTab() {
             </span>
           </div>
 
+          {/* Execute / Resume buttons */}
+          <PlanActions plan={plan} />
+
           {/* Steps */}
           <div style={s.steps}>
             {plan.steps.map((step) => (
@@ -235,6 +240,99 @@ export function PlanTab() {
             ))}
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+// ── Plan Actions (Execute / Resume) ─────────────────────────
+
+function PlanActions({ plan }: { plan: Plan }) {
+  const orcPhase = useOrchestrationStore((s) => s.phase);
+  const isOrcActive = orcPhase !== "idle" && orcPhase !== "complete" && orcPhase !== "failed";
+  const [loading, setLoading] = useState(false);
+
+  const pendingSteps = plan.steps.filter(st => st.status === "pending");
+  const completedSteps = plan.steps.filter(st => st.status === "completed" || st.status === "skipped");
+  const hasPending = pendingSteps.length > 0;
+  const hasCompleted = completedSteps.length > 0;
+  const isFullyDone = pendingSteps.length === 0 && plan.steps.length > 0;
+
+  // Execute = run all steps from scratch (only if nothing started)
+  const canExecute = hasPending && !hasCompleted && !isOrcActive;
+  // Resume = continue from where it stopped (some done, some pending)
+  const canResume = hasPending && hasCompleted && !isOrcActive;
+
+  const handleExecute = useCallback(async () => {
+    setLoading(true);
+    try {
+      await newSession();
+      window.dispatchEvent(new CustomEvent("tide:switch-tab", { detail: "chat" }));
+
+      const stepList = plan.steps.map((st, i) => `${i + 1}. ${st.title}`).join("\n");
+      const prompt =
+        `Execute this implementation plan:\n\n` +
+        `## ${plan.title}\n\n${plan.description}\n\n` +
+        `## Steps\n\n${stepList}\n\n` +
+        `Execute all steps in order. Use the plan tools to update step status as you go.`;
+
+      await orchestrate(prompt);
+    } catch (err) {
+      console.error("[plan] Execute failed:", err);
+    } finally {
+      setLoading(false);
+    }
+  }, [plan]);
+
+  const handleResume = useCallback(async () => {
+    setLoading(true);
+    try {
+      await newSession();
+      window.dispatchEvent(new CustomEvent("tide:switch-tab", { detail: "chat" }));
+
+      const completedSummary = completedSteps
+        .map(st => `- ✓ ${st.title}${st.summary ? `: ${st.summary}` : ""}`)
+        .join("\n");
+      const pendingSummary = pendingSteps
+        .map((st, i) => `${i + 1}. ${st.title}: ${st.description}`)
+        .join("\n");
+
+      const prompt =
+        `Resume this implementation plan from where it was interrupted:\n\n` +
+        `## ${plan.title}\n\n${plan.description}\n\n` +
+        `## Completed Steps\n\n${completedSummary}\n\n` +
+        `## Remaining Steps (execute these)\n\n${pendingSummary}\n\n` +
+        `Continue executing the remaining steps. Read the completed step summaries for context.`;
+
+      await orchestrate(prompt);
+    } catch (err) {
+      console.error("[plan] Resume failed:", err);
+    } finally {
+      setLoading(false);
+    }
+  }, [plan, completedSteps, pendingSteps]);
+
+  if (isFullyDone || isOrcActive) return null;
+
+  return (
+    <div style={s.planActions}>
+      {canExecute && (
+        <button
+          style={s.executeBtn}
+          onClick={handleExecute}
+          disabled={loading}
+        >
+          {loading ? "Starting..." : "▶ Execute Plan"}
+        </button>
+      )}
+      {canResume && (
+        <button
+          style={s.resumeBtn}
+          onClick={handleResume}
+          disabled={loading}
+        >
+          {loading ? "Resuming..." : "▶ Resume from Step " + (completedSteps.length + 1)}
+        </button>
       )}
     </div>
   );
@@ -514,6 +612,33 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: "var(--font-size-xs)",
     color: "var(--text-secondary)",
     flexShrink: 0,
+  },
+  planActions: {
+    display: "flex",
+    gap: 8,
+    padding: "8px 0",
+  },
+  executeBtn: {
+    fontFamily: "var(--font-ui)",
+    fontSize: "var(--font-size-xs)",
+    fontWeight: 500,
+    color: "#fff",
+    backgroundColor: "var(--accent)",
+    border: "none",
+    borderRadius: "var(--radius-sm)",
+    padding: "6px 14px",
+    cursor: "pointer",
+  },
+  resumeBtn: {
+    fontFamily: "var(--font-ui)",
+    fontSize: "var(--font-size-xs)",
+    fontWeight: 500,
+    color: "#fff",
+    backgroundColor: "var(--warning)",
+    border: "none",
+    borderRadius: "var(--radius-sm)",
+    padding: "6px 14px",
+    cursor: "pointer",
   },
   steps: {
     display: "flex",

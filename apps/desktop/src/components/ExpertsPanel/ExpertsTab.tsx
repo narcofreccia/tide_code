@@ -420,17 +420,33 @@ export function ExpertsTab() {
     }
   }, [activeSession, selectedTeam]);
 
+  const [executing, setExecuting] = useState(false);
+
   const handleExecuteViaOrchestrator = useCallback(async () => {
-    if (!activeSession) return;
+    if (!synthesisMsg?.content) return;
+    setExecuting(true);
     try {
-      await orchestrate(
-        `Execute the findings from experts session on topic: ${activeSession.topic}`,
-        activeSession.id,
-      );
+      // Use the orchestrator's existing pipeline with expert synthesis as context.
+      // The orchestrator will: Plan (using expert synthesis as pre-research) →
+      // Wait for user confirmation → Execute steps → Review
+      const prompt =
+        `Implement the following expert recommendations.\n\n` +
+        `## Original Topic\n\n${topic}\n\n` +
+        `The expert team has already analyzed the codebase thoroughly. ` +
+        `Use their findings and action items to create and execute the plan. ` +
+        `Do NOT re-explore the codebase — the expert analysis below is your research.`;
+
+      // Switch to Chat tab to show orchestration progress
+      window.dispatchEvent(new CustomEvent("tide:switch-tab", { detail: "chat" }));
+
+      // Start orchestration — expert_context feeds the synthesis into the planning prompt
+      await orchestrate(prompt, activeSession?.id);
     } catch (err) {
-      console.error("[experts] Failed to orchestrate:", err);
+      console.error("[experts] Failed to start orchestration:", err);
+    } finally {
+      setExecuting(false);
     }
-  }, [activeSession]);
+  }, [synthesisMsg, topic, activeSession]);
 
   // ── Render: Active Session (Group Chat) ────────────────
 
@@ -534,8 +550,12 @@ export function ExpertsTab() {
               <div style={s.synthesisBubble}>
                 <div style={s.synthesisContent}>{synthesisMsg.content}</div>
                 <div style={s.synthesisActions}>
-                  <button style={s.orchestrateBtn} onClick={handleExecuteViaOrchestrator}>
-                    Execute via Orchestrator
+                  <button
+                    style={{ ...s.orchestrateBtn, opacity: executing ? 0.6 : 1 }}
+                    onClick={handleExecuteViaOrchestrator}
+                    disabled={executing}
+                  >
+                    {executing ? "Starting..." : "▶ Plan & Execute"}
                   </button>
                   <button style={s.newSessionBtn} onClick={handleNewSession}>
                     New Session
