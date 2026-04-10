@@ -600,11 +600,12 @@ export const useStreamStore = create<StreamState>((set, get) => ({
 
             set(updates);
 
-            // Sync context window size (actual usage is updated from message_end events)
+            // Sync context window size — preserve existing usage, only update budget
             if (updates.contextWindow) {
               const existing = useContextStore.getState().breakdown;
-              const currentUsage = existing?.totalTokens ?? 0;
-              useContextStore.getState().updateFromPiState(currentUsage, updates.contextWindow);
+              if (existing && existing.totalTokens > 0) {
+                useContextStore.getState().updateFromPiState(existing.totalTokens, updates.contextWindow);
+              }
             }
             break;
           }
@@ -623,11 +624,12 @@ export const useStreamStore = create<StreamState>((set, get) => ({
                 updates.contextWindow = Number(m.contextWindow);
               }
               set(updates);
-              // If contextWindow changed, recalculate with current usage (not cumulative stats)
+              // If contextWindow changed, update budget but preserve existing usage
               if (updates.contextWindow) {
                 const existing = useContextStore.getState().breakdown;
-                const currentUsage = existing?.totalTokens ?? 0;
-                useContextStore.getState().updateFromPiState(currentUsage, updates.contextWindow);
+                if (existing && existing.totalTokens > 0) {
+                  useContextStore.getState().updateFromPiState(existing.totalTokens, updates.contextWindow);
+                }
               }
               // Insert system message in chat when model changes
               if (prevModel && prevModel !== name) {
@@ -845,18 +847,28 @@ export const useStreamStore = create<StreamState>((set, get) => ({
             set({ isCompacting: false });
             if (e.success) {
               console.log("[Tide] Context compacted successfully");
-              // Refresh session stats to get updated token count
+              // Refresh session stats + Pi state to re-sync context indicator
               getSessionStats().catch(() => {});
+              getPiState().catch(() => {});
               // Show before/after feedback
               const ctxState = useContextStore.getState();
               const pre = ctxState.preCompactTokens;
               if (pre && pre > 0) {
-                // Wait for stats to update, then compute savings
+                // Wait for stats to update, then compute savings + add chat message
                 setTimeout(() => {
                   const post = useContextStore.getState().breakdown?.totalTokens ?? 0;
                   ctxState.setPostCompactTokens(post);
                   if (post < pre) {
                     const savedPct = Math.round((1 - post / pre) * 100);
+                    // Add system message in chat
+                    set((state) => ({
+                      messages: [...state.messages, {
+                        role: "system" as const,
+                        id: `sys-compact-${Date.now()}`,
+                        content: `Context compacted: ${Math.round(pre / 1000)}K → ${Math.round(post / 1000)}K tokens (saved ${savedPct}%)`,
+                        timestamp: Date.now(),
+                      }],
+                    }));
                     import("./toastStore").then(({ showSuccess }) => {
                       showSuccess(`Compacted: ${Math.round(pre / 1000)}K → ${Math.round(post / 1000)}K tokens (saved ${savedPct}%)`);
                     });
@@ -1054,8 +1066,14 @@ export const useStreamStore = create<StreamState>((set, get) => ({
           }
         }
 
-        // Context indicator is updated from agent_end (stable, fires once) rather than
-        // every message_end (fires per turn, causes flickering as context grows mid-agent).
+        // Update context usage from message_end usage data (handle different provider field names)
+        if (endMsg?.usage) {
+          const inputTokens = endMsg.usage.input ?? endMsg.usage.prompt_tokens ?? endMsg.usage.inputTokens;
+          if (inputTokens != null && inputTokens > 0) {
+            const ctxWindow = get().contextWindow;
+            useContextStore.getState().updateFromPiState(inputTokens, ctxWindow);
+          }
+        }
         break;
       }
 
@@ -1137,11 +1155,12 @@ export const useStreamStore = create<StreamState>((set, get) => ({
               ],
             }));
           }
-          // Update context window size (usage comes from message_end events)
+          // Update context window size — preserve existing usage
           if (updates.contextWindow) {
             const existing = useContextStore.getState().breakdown;
-            const currentUsage = existing?.totalTokens ?? 0;
-            useContextStore.getState().updateFromPiState(currentUsage, updates.contextWindow);
+            if (existing && existing.totalTokens > 0) {
+              useContextStore.getState().updateFromPiState(existing.totalTokens, updates.contextWindow);
+            }
           }
           // Fix 3: Proactively refresh full state to ensure contextWindow is synced
           getPiState().catch(() => {});

@@ -287,4 +287,13 @@ export function initExpertsListener(): void {
   }).catch((err) => {
     console.error("[experts] Failed to set up message listener:", err);
   });
+
+  // Auto-refresh when experts/teams are created or deleted (e.g., by Pi tools)
+  listen<string>("experts_changed", (event) => {
+    const what = event.payload;
+    if (what === "teams" || what === "all") useExpertsStore.getState().loadTeams();
+    if (what === "experts" || what === "all") useExpertsStore.getState().loadExperts();
+  }).catch((err) => {
+    console.error("[experts] Failed to set up change listener:", err);
+  });
 }

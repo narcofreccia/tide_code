@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useExpertsStore } from "../../stores/expertsStore";
 import { useStreamStore, type AvailableModel } from "../../stores/stream";
 import type { TeamConfig, ExpertConfigEntry } from "../../lib/ipc";
+import { promoteExpertTeam } from "../../lib/ipc";
 
 // ── Model Dropdown (reuses Pi's available models) ──────────
 
@@ -189,7 +190,7 @@ function TeamEditor({
         <select
           style={s.select}
           value={draft.outputMode || "execute"}
-          onChange={(e) => updateField("outputMode", e.target.value)}
+          onChange={(e) => updateField("outputMode", e.target.value as "execute" | "advisory" | "document")}
         >
           <option value="execute">Execute — Plan & build from synthesis</option>
           <option value="advisory">Advisory — Analysis & recommendations only</option>
@@ -468,6 +469,11 @@ export function ExpertsSettings() {
   const [creatingTeam, setCreatingTeam] = useState(false);
   const [creatingExpert, setCreatingExpert] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [expertSearch, setExpertSearch] = useState("");
+  const [expertPage, setExpertPage] = useState(0);
+  const [teamSearch, setTeamSearch] = useState("");
+  const [teamPage, setTeamPage] = useState(0);
+  const PAGE_SIZE = 10;
 
   useEffect(() => {
     Promise.all([loadTeams(), loadExperts()]).finally(() => setLoading(false));
@@ -553,6 +559,15 @@ export function ExpertsSettings() {
         behavior settings.
       </p>
 
+      {experts.length > PAGE_SIZE && (
+        <input
+          style={s.searchInput}
+          placeholder="Search experts..."
+          value={expertSearch}
+          onChange={(e) => { setExpertSearch(e.target.value); setExpertPage(0); }}
+        />
+      )}
+
       <div style={s.listContainer}>
         {experts.length === 0 && !creatingExpert && (
           <div style={s.emptyState}>
@@ -560,7 +575,14 @@ export function ExpertsSettings() {
           </div>
         )}
 
-        {experts.map((entry) => {
+        {(() => {
+          const filtered = experts.filter(e =>
+            e.name.toLowerCase().includes(expertSearch.toLowerCase())
+          );
+          const paged = filtered.slice(expertPage * PAGE_SIZE, (expertPage + 1) * PAGE_SIZE);
+          const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+          return (<>
+        {paged.map((entry) => {
           const isEditing = editingExpertName === entry.name;
           if (isEditing) {
             return (
@@ -575,10 +597,16 @@ export function ExpertsSettings() {
           }
 
           const parsed = parseExpertContent(entry.content);
+          const isGlobal = entry.scope === "global";
           return (
             <div key={entry.name} style={s.listRow}>
               <div style={s.listRowInfo}>
-                <div style={s.listRowName}>{entry.name}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={s.listRowName}>{entry.name}</span>
+                  <span style={{ ...s.scopeBadge, color: isGlobal ? "var(--accent)" : "var(--text-secondary)" }}>
+                    {isGlobal ? "global" : "local"}
+                  </span>
+                </div>
                 <div style={s.listRowMeta}>
                   {parsed.model || "no model"} &middot; temp {parsed.temperature.toFixed(2)} &middot;{" "}
                   {parsed.maxTurns} turns
@@ -604,6 +632,16 @@ export function ExpertsSettings() {
             </div>
           );
         })}
+
+        {totalPages > 1 && (
+          <div style={s.pagination}>
+            <button style={{ ...s.btnSmall, opacity: expertPage === 0 ? 0.3 : 1 }} disabled={expertPage === 0} onClick={() => setExpertPage(p => p - 1)}>&larr;</button>
+            <span>{expertPage + 1} / {totalPages}</span>
+            <button style={{ ...s.btnSmall, opacity: expertPage >= totalPages - 1 ? 0.3 : 1 }} disabled={expertPage >= totalPages - 1} onClick={() => setExpertPage(p => p + 1)}>&rarr;</button>
+          </div>
+        )}
+          </>);
+        })()}
 
         {creatingExpert && (
           <ExpertEditor
@@ -633,6 +671,15 @@ export function ExpertsSettings() {
         and optionally assign a leader.
       </p>
 
+      {teams.length > PAGE_SIZE && (
+        <input
+          style={s.searchInput}
+          placeholder="Search teams..."
+          value={teamSearch}
+          onChange={(e) => { setTeamSearch(e.target.value); setTeamPage(0); }}
+        />
+      )}
+
       <div style={s.listContainer}>
         {teams.length === 0 && !creatingTeam && (
           <div style={s.emptyState}>
@@ -640,7 +687,15 @@ export function ExpertsSettings() {
           </div>
         )}
 
-        {teams.map((team) => {
+        {(() => {
+          const filtered = teams.filter(t =>
+            (t.name || "").toLowerCase().includes(teamSearch.toLowerCase()) ||
+            t.id.toLowerCase().includes(teamSearch.toLowerCase())
+          );
+          const paged = filtered.slice(teamPage * PAGE_SIZE, (teamPage + 1) * PAGE_SIZE);
+          const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+          return (<>
+        {paged.map((team) => {
           const isEditing = editingTeamId === team.id;
           if (isEditing) {
             return (
@@ -654,10 +709,16 @@ export function ExpertsSettings() {
             );
           }
 
+          const isTeamGlobal = (team as any).scope === "global";
           return (
             <div key={team.id} style={s.listRow}>
               <div style={s.listRowInfo}>
-                <div style={s.listRowName}>{team.name || "Untitled Team"}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={s.listRowName}>{team.name || "Untitled Team"}</span>
+                  <span style={{ ...s.scopeBadge, color: isTeamGlobal ? "var(--accent)" : "var(--text-secondary)" }}>
+                    {isTeamGlobal ? "global" : "local"}
+                  </span>
+                </div>
                 <div style={s.listRowMeta}>
                   {team.experts.length} expert{team.experts.length !== 1 ? "s" : ""} &middot;{" "}
                   {team.debateRounds} round{team.debateRounds !== 1 ? "s" : ""} &middot;{" "}
@@ -666,6 +727,13 @@ export function ExpertsSettings() {
                 </div>
               </div>
               <div style={s.listRowActions}>
+                <button
+                  style={s.btnSmall}
+                  onClick={() => promoteExpertTeam(team.id, isTeamGlobal ? "local" : "global")}
+                  title={isTeamGlobal ? "Move team + experts to this project" : "Make team + experts available globally"}
+                >
+                  {isTeamGlobal ? "Make Local" : "Make Global"}
+                </button>
                 <button
                   style={s.btnSmall}
                   onClick={() => {
@@ -685,6 +753,16 @@ export function ExpertsSettings() {
             </div>
           );
         })}
+
+        {totalPages > 1 && (
+          <div style={s.pagination}>
+            <button style={{ ...s.btnSmall, opacity: teamPage === 0 ? 0.3 : 1 }} disabled={teamPage === 0} onClick={() => setTeamPage(p => p - 1)}>&larr;</button>
+            <span>{teamPage + 1} / {totalPages}</span>
+            <button style={{ ...s.btnSmall, opacity: teamPage >= totalPages - 1 ? 0.3 : 1 }} disabled={teamPage >= totalPages - 1} onClick={() => setTeamPage(p => p + 1)}>&rarr;</button>
+          </div>
+        )}
+          </>);
+        })()}
 
         {creatingTeam && (
           <TeamEditor
@@ -719,6 +797,36 @@ export function ExpertsSettings() {
 // ── Styles ──────────────────────────────────────────────────
 
 const s: Record<string, React.CSSProperties> = {
+  searchInput: {
+    fontFamily: "var(--font-ui)",
+    fontSize: "var(--font-size-sm)",
+    color: "var(--text-primary)",
+    background: "var(--bg-primary)",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-sm)",
+    padding: "6px 10px",
+    width: "100%",
+    marginBottom: 8,
+    outline: "none",
+  },
+  pagination: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 12,
+    padding: "8px 0",
+    fontFamily: "var(--font-ui)",
+    fontSize: "var(--font-size-xs)",
+    color: "var(--text-secondary)",
+  },
+  scopeBadge: {
+    fontFamily: "var(--font-mono)",
+    fontSize: 9,
+    fontWeight: 600,
+    textTransform: "uppercase" as const,
+    letterSpacing: "0.5px",
+    opacity: 0.7,
+  },
   heading: {
     margin: "0 0 8px",
     fontSize: "var(--font-size-md)",

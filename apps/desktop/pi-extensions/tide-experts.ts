@@ -90,8 +90,17 @@ function expertsDir(cwd: string): string {
   return path.join(cwd, ".tide", "experts");
 }
 
+function globalExpertsDir(): string {
+  const home = process.env.HOME || process.env.USERPROFILE || ".";
+  return path.join(home, ".tide", "experts");
+}
+
 function loadExpertConfig(cwd: string, name: string): ExpertConfig | null {
-  const filePath = path.join(expertsDir(cwd), "experts", `${name}.md`);
+  let filePath = path.join(expertsDir(cwd), "experts", `${name}.md`);
+  // Fall back to global experts dir
+  if (!fs.existsSync(filePath)) {
+    filePath = path.join(globalExpertsDir(), "experts", `${name}.md`);
+  }
   if (!fs.existsSync(filePath)) return null;
 
   const content = fs.readFileSync(filePath, "utf-8");
@@ -155,7 +164,10 @@ function loadExpertConfig(cwd: string, name: string): ExpertConfig | null {
 }
 
 function loadTeamConfig(cwd: string, teamId: string): TeamConfig | null {
-  const filePath = path.join(expertsDir(cwd), "teams", `${teamId}.json`);
+  let filePath = path.join(expertsDir(cwd), "teams", `${teamId}.json`);
+  if (!fs.existsSync(filePath)) {
+    filePath = path.join(globalExpertsDir(), "teams", `${teamId}.json`);
+  }
   if (!fs.existsSync(filePath)) return null;
   try {
     const raw = JSON.parse(fs.readFileSync(filePath, "utf-8"));
@@ -166,20 +178,36 @@ function loadTeamConfig(cwd: string, teamId: string): TeamConfig | null {
 }
 
 function listTeams(cwd: string): TeamConfig[] {
-  const teamsDir = path.join(expertsDir(cwd), "teams");
-  if (!fs.existsSync(teamsDir)) return [];
-  return fs.readdirSync(teamsDir)
-    .filter(f => f.endsWith(".json"))
-    .map(f => {
-      try {
-        return JSON.parse(fs.readFileSync(path.join(teamsDir, f), "utf-8")) as TeamConfig;
-      } catch { return null; }
-    })
-    .filter((t): t is TeamConfig => t !== null);
+  const readDir = (dir: string): TeamConfig[] => {
+    if (!fs.existsSync(dir)) return [];
+    return fs.readdirSync(dir)
+      .filter(f => f.endsWith(".json"))
+      .map(f => {
+        try { return JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8")) as TeamConfig; }
+        catch { return null; }
+      })
+      .filter((t): t is TeamConfig => t !== null);
+  };
+  // Global first, local overrides by id
+  const map = new Map<string, TeamConfig>();
+  for (const t of readDir(path.join(globalExpertsDir(), "teams"))) map.set(t.id, t);
+  for (const t of readDir(path.join(expertsDir(cwd), "teams"))) map.set(t.id, t);
+  return [...map.values()];
 }
 
 function listExpertNames(cwd: string): string[] {
-  const dir = path.join(expertsDir(cwd), "experts");
+  const readNames = (dir: string): string[] => {
+    if (!fs.existsSync(dir)) return [];
+    return fs.readdirSync(dir).filter(f => f.endsWith(".md")).map(f => f.replace(/\.md$/, ""));
+  };
+  const names = new Set<string>();
+  for (const n of readNames(path.join(globalExpertsDir(), "experts"))) names.add(n);
+  for (const n of readNames(path.join(expertsDir(cwd), "experts"))) names.add(n);
+  return [...names];
+}
+
+// Keep old signature for backward compat (used internally)
+function _listExpertNamesFromDir(dir: string): string[] {
   if (!fs.existsSync(dir)) return [];
   return fs.readdirSync(dir)
     .filter(f => f.endsWith(".md"))
@@ -721,8 +749,9 @@ async function runBrainstormSession(opts: {
 
 // ── Extension Registration ─────────────────────────────
 
-function initializeDefaults(cwd: string): void {
-  const baseDir = expertsDir(cwd);
+function initializeDefaults(_cwd: string): void {
+  // Defaults go to global dir so they're available across all projects
+  const baseDir = globalExpertsDir();
   const expertsSubDir = path.join(baseDir, "experts");
   const teamsSubDir = path.join(baseDir, "teams");
   const alreadyHasExperts = fs.existsSync(expertsSubDir) && fs.readdirSync(expertsSubDir).length > 0;
@@ -769,6 +798,67 @@ export default function tideExperts(pi: ExtensionAPI) {
       initializeDefaults(cwd);
     } catch { /* ignore initialization errors */ }
     return {};
+  });
+
+  // ── Team Builder guidance injection ──────────────────
+  pi.on("before_agent_start", async (event: any) => {
+    const msg = (event.prompt || "");
+
+    // Skip orchestrated/expert prompts
+    if (msg.startsWith("[tide:orchestrated]") || msg.startsWith("[tide:experts]")) return;
+
+    // Detect team-building intent
+    const teamBuildPattern = /\b(build|create|make|setup|set up|design|new)\b.*\b(team|group|panel|board|experts?)\b/i;
+    if (!teamBuildPattern.test(msg)) return;
+
+    const guidance =
+`## Expert Team Builder
+
+CRITICAL: You MUST use the \`tide_experts_manage\` and \`tide_experts_teams\` tools to create experts and teams. Do NOT write markdown files, JSON files, or any other files directly. The tools register experts/teams in the system so they appear in the UI.
+
+The user wants to create a new expert team. Be conversational — ask one or two questions at a time, not a wall of questions. Keep it snappy.
+
+DO NOT ask about repositories or codebases — the experts will discover those during brainstorming.
+
+### Flow
+
+1. **Understand the purpose**: Ask briefly what the team is for and what domains/areas the experts should cover. Infer as much as possible from the user's initial message — don't re-ask what they already told you.
+
+2. **Propose expert roles**: Based on the user's description, propose 3-5 experts in a concise table:
+   | Name | Focus |
+   Each with a slug name (e.g., "api-specialist"). Ask if they want to adjust, add, or remove any.
+
+3. **Models & settings**: Ask which models to use. Suggest sensible defaults. Also ask:
+   - Output mode: execute / advisory / document
+   - Time limit (suggest 10-15 min)
+   Keep this in one short message.
+
+4. **Create on confirmation**: Once the user says go, create everything:
+   - List existing experts first (\`tide_experts_manage\` action="list") to avoid duplicates
+   - Create each expert (\`tide_experts_manage\` action="create") with YAML frontmatter + system prompt:
+     \`\`\`
+     ---
+     name: "Display Name"
+     description: "One-line focus"
+     model: "provider/model-id"
+     temperature: 0.7
+     maxTurns: 5
+     ---
+     System prompt: role, focus areas, what to analyze...
+     \`\`\`
+   - Create the team (\`tide_experts_teams\` action="create") with JSON config:
+     id, name, description, experts[], leader, debateRounds, timeLimitMinutes, outputMode, createdAt, updatedAt
+   - Tell the user: "Done! Go to the **Experts tab** to start brainstorming."
+
+### Rules
+- Be concise — no walls of text, no numbered checklists of questions
+- Slug format for names and IDs (lowercase, hyphens)
+- The "leader" is auto-added to sessions — do NOT put it in the experts array
+- Never create without user confirmation
+- Generate good system prompts (2-3 focused paragraphs per expert) — these drive the quality of the brainstorming`;
+
+    const existing = event.systemPrompt || "";
+    return { systemPrompt: existing + "\n\n" + guidance };
   });
 
   // ── tide_experts_brainstorm ──────────────────────────
@@ -893,8 +983,14 @@ export default function tideExperts(pi: ExtensionAPI) {
   pi.registerTool({
     name: "tide_experts_teams",
     label: "Expert Teams",
-    description: "List, create, update, or delete expert team templates.",
-    promptSnippet: "tide_experts_teams manages team templates. Use action='list' to see available teams.",
+    description:
+      "List, create, update, or delete expert team templates. " +
+      "Teams appear in the Experts tab and Settings > Experts. " +
+      "When the user asks to create a team, you MUST use this tool — do NOT write files directly.",
+    promptSnippet:
+      "tide_experts_teams manages team templates that appear in Settings > Experts. " +
+      "Use action='create' with a JSON config string to register a new team. " +
+      "Use action='list' to see existing teams. Always use this tool to create teams.",
     parameters: Type.Object({
       action: Type.Union([
         Type.Literal("list"),
@@ -954,8 +1050,14 @@ export default function tideExperts(pi: ExtensionAPI) {
   pi.registerTool({
     name: "tide_experts_manage",
     label: "Manage Experts",
-    description: "List, create, update, or delete individual expert definitions.",
-    promptSnippet: "tide_experts_manage handles individual expert configs. Each expert has a role, model, and system prompt.",
+    description:
+      "List, create, update, or delete individual expert definitions. " +
+      "Experts appear in Settings > Experts > Expert Library. " +
+      "When the user asks to create experts, you MUST use this tool — do NOT write files directly.",
+    promptSnippet:
+      "tide_experts_manage creates/updates expert configs that appear in Settings > Expert Library. " +
+      "Use action='create' with name (slug) and content (YAML frontmatter + system prompt markdown). " +
+      "Use action='list' to see existing experts. Always use this tool to create experts.",
     parameters: Type.Object({
       action: Type.Union([
         Type.Literal("list"),

@@ -715,7 +715,13 @@ export function ExpertsTab() {
           </select>
           <button
             style={s.manageBtn}
-            onClick={() => useSettingsStore.getState().open("experts")}
+            onClick={() => {
+              useSettingsStore.getState().open("experts");
+              // Ensure editor panel is visible so user can see Settings
+              import("../../stores/ui").then(({ useUiStore }) => {
+                useUiStore.getState().showFileTree();
+              });
+            }}
           >
             Manage
           </button>

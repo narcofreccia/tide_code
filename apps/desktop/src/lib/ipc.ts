@@ -677,6 +677,7 @@ export interface TeamConfig {
 export interface ExpertConfigEntry {
   name: string;
   content: string;
+  scope?: "local" | "global";
 }
 
 export interface ExpertsSessionState {
@@ -713,22 +714,25 @@ export interface ExpertMailboxMessage {
 export async function listExpertTeams(): Promise<TeamConfig[]> {
   return invoke("list_expert_teams");
 }
-export async function saveExpertTeam(config: TeamConfig): Promise<void> {
-  await invoke("save_expert_team", { config });
+export async function saveExpertTeam(config: TeamConfig, scope?: string): Promise<void> {
+  await invoke("save_expert_team", { config, scope: scope ?? null });
 }
-export async function deleteExpertTeam(teamId: string): Promise<void> {
-  await invoke("delete_expert_team", { teamId });
+export async function deleteExpertTeam(teamId: string, scope?: string): Promise<void> {
+  await invoke("delete_expert_team", { teamId, scope: scope ?? null });
+}
+export async function promoteExpertTeam(teamId: string, toScope: string): Promise<void> {
+  await invoke("promote_expert_team", { teamId, toScope });
 }
 
 // Individual experts
 export async function listExpertsConfigs(): Promise<ExpertConfigEntry[]> {
   return invoke("list_experts_configs");
 }
-export async function saveExpertConfig(name: string, content: string): Promise<void> {
-  await invoke("save_expert_config", { name, content });
+export async function saveExpertConfig(name: string, content: string, scope?: string): Promise<void> {
+  await invoke("save_expert_config", { name, content, scope: scope ?? null });
 }
-export async function deleteExpertConfig(name: string): Promise<void> {
-  await invoke("delete_expert_config", { name });
+export async function deleteExpertConfig(name: string, scope?: string): Promise<void> {
+  await invoke("delete_expert_config", { name, scope: scope ?? null });
 }
 
 // Sessions

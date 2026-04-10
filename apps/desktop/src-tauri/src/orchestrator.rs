@@ -394,6 +394,14 @@ impl Orchestrator {
             // Execute step with error recovery
             match self.send_and_wait(pi_handle, &step_prompt, notify).await {
                 Ok(()) => {
+                    // Fallback: if the model didn't mark the step completed, do it now
+                    let updated_plan = self.load_plan_by_id(plan_id)?;
+                    if let Some(s) = updated_plan.steps.iter().find(|s| s.id == step.id) {
+                        if s.status != "completed" && s.status != "skipped" {
+                            tracing::warn!("Step '{}' not marked completed by model — auto-marking", step.title);
+                            self.mark_step_completed(plan_id, &step.id);
+                        }
+                    }
                     steps_executed += 1;
                     // Compact every 3rd step to prevent context bloat
                     if steps_executed % 3 == 0 && (steps_executed as usize) < total {
@@ -659,6 +667,19 @@ impl Orchestrator {
         }
     }
 
+    /// Mark a step as completed (fallback when model forgets to call tide_plan_update).
+    fn mark_step_completed(&self, plan_id: &str, step_id: &str) {
+        if let Ok(mut plan) = self.load_plan_by_id(plan_id) {
+            if let Some(step) = plan.steps.iter_mut().find(|s| s.id == step_id) {
+                step.status = "completed".to_string();
+            }
+            // Recompute plan status
+            let all_done = plan.steps.iter().all(|s| s.status == "completed" || s.status == "skipped");
+            if all_done { plan.status = "completed".to_string(); }
+            self.save_plan(&plan);
+        }
+    }
+
     fn plans_dir(&self) -> std::path::PathBuf {
         std::path::PathBuf::from(&self.workspace_root)
             .join(".tide")
@@ -782,10 +803,11 @@ impl Orchestrator {
             }
         }
 
-        // Fallback: generic guidance (no hardcoded model names)
-        "- Code editing, refactoring, bug fixes → strongest available coding model\n                \
-         - Research, analysis, planning → standard model\n                \
-         - Simple validation, build checks → lightweight/fast model\n                ".to_string()
+        // Fallback: generic guidance — prefer recent capable models, avoid legacy/nano
+        "- Code editing, refactoring, bug fixes → strongest available coding model (prefer Claude Opus 4.6, Sonnet 4.6, or GPT-5.4)\n                \
+         - Research, analysis, planning → same capable model (context is expensive, avoid switching unless clearly justified)\n                \
+         - Simple validation, build checks → can use GPT-5.4-mini but NEVER legacy or nano models\n                \
+         - IMPORTANT: Only switch models when the cost savings clearly outweigh the context waste from switching\n                ".to_string()
     }
 
     // ── Prompt Builders ─────────────────────────────────────

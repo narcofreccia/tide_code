@@ -2315,6 +2315,7 @@ pub fn run() {
             experts::list_expert_teams,
             experts::save_expert_team,
             experts::delete_expert_team,
+            experts::promote_expert_team,
             experts::list_experts_configs,
             experts::save_expert_config,
             experts::delete_expert_config,

@@ -68,6 +68,30 @@ fn sessions_dir(workspace: &str) -> PathBuf {
     experts_base_dir(workspace).join("sessions")
 }
 
+// Global (user-level) paths — shared across all projects
+fn global_experts_base_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".tide").join("experts")
+}
+
+fn global_teams_dir() -> PathBuf {
+    global_experts_base_dir().join("teams")
+}
+
+fn global_experts_dir() -> PathBuf {
+    global_experts_base_dir().join("experts")
+}
+
+/// Resolve teams dir based on scope
+fn resolve_teams_dir(workspace: &str, scope: &str) -> PathBuf {
+    if scope == "global" { global_teams_dir() } else { teams_dir(workspace) }
+}
+
+/// Resolve experts dir based on scope
+fn resolve_experts_dir(workspace: &str, scope: &str) -> PathBuf {
+    if scope == "global" { global_experts_dir() } else { experts_dir(workspace) }
+}
+
 // ── Mailbox Watcher ────────────────────────────────────
 
 /// Start watching a session's mailbox directories for new messages.
@@ -350,22 +374,11 @@ pub async fn send_expert_message(
 
 // ── Tauri Commands: Team CRUD ──────────────────────────
 
-#[tauri::command]
-pub async fn list_expert_teams(
-    state: tauri::State<'_, super::AppState>,
-) -> Result<Vec<serde_json::Value>, String> {
-    let workspace = {
-        let root = state.workspace_root.lock().await;
-        root.clone().ok_or("No workspace open")?
-    };
-
-    let dir = teams_dir(&workspace);
-    if !dir.exists() {
-        return Ok(vec![]);
-    }
-
+/// Read teams from a directory, adding scope + backward compat fields
+fn read_teams_from_dir(dir: &PathBuf, scope: &str) -> Vec<serde_json::Value> {
     let mut teams = Vec::new();
-    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
+    if !dir.exists() { return teams; }
+    let entries = match std::fs::read_dir(dir) { Ok(e) => e, Err(_) => return teams };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("json") {
@@ -377,23 +390,49 @@ pub async fn list_expert_teams(
                             team.as_object_mut().map(|o| o.insert("leader".to_string(), judge));
                         }
                     }
-                    // Default outputMode to "execute" if missing
                     if team.get("outputMode").is_none() {
                         team.as_object_mut().map(|o| o.insert("outputMode".to_string(), serde_json::json!("execute")));
                     }
+                    team.as_object_mut().map(|o| o.insert("scope".to_string(), serde_json::json!(scope)));
                     teams.push(team);
                 }
             }
         }
     }
+    teams
+}
 
-    Ok(teams)
+#[tauri::command]
+pub async fn list_expert_teams(
+    state: tauri::State<'_, super::AppState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let workspace = {
+        let root = state.workspace_root.lock().await;
+        root.clone().ok_or("No workspace open")?
+    };
+
+    // Load global first, then local overrides by id
+    let mut teams_map = std::collections::HashMap::new();
+    for team in read_teams_from_dir(&global_teams_dir(), "global") {
+        if let Some(id) = team.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()) {
+            teams_map.insert(id, team);
+        }
+    }
+    for team in read_teams_from_dir(&teams_dir(&workspace), "local") {
+        if let Some(id) = team.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()) {
+            teams_map.insert(id, team); // local overrides global
+        }
+    }
+
+    Ok(teams_map.into_values().collect())
 }
 
 #[tauri::command]
 pub async fn save_expert_team(
     state: tauri::State<'_, super::AppState>,
+    app_handle: tauri::AppHandle,
     config: serde_json::Value,
+    scope: Option<String>,
 ) -> Result<(), String> {
     let workspace = {
         let root = state.workspace_root.lock().await;
@@ -405,34 +444,59 @@ pub async fn save_expert_team(
         .and_then(|v| v.as_str())
         .ok_or("Team config must have an 'id' field")?;
 
-    let dir = teams_dir(&workspace);
+    let dir = resolve_teams_dir(&workspace, scope.as_deref().unwrap_or("local"));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     let file_path = dir.join(format!("{}.json", team_id));
     let content = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     std::fs::write(&file_path, content).map_err(|e| e.to_string())?;
 
+    let _ = app_handle.emit("experts_changed", "teams");
     Ok(())
 }
 
 #[tauri::command]
 pub async fn delete_expert_team(
     state: tauri::State<'_, super::AppState>,
+    app_handle: tauri::AppHandle,
     team_id: String,
+    scope: Option<String>,
 ) -> Result<(), String> {
     let workspace = {
         let root = state.workspace_root.lock().await;
         root.clone().ok_or("No workspace open")?
     };
 
-    let file_path = teams_dir(&workspace).join(format!("{}.json", team_id));
+    let file_path = resolve_teams_dir(&workspace, scope.as_deref().unwrap_or("local")).join(format!("{}.json", team_id));
     if file_path.exists() {
         std::fs::remove_file(&file_path).map_err(|e| e.to_string())?;
     }
+    let _ = app_handle.emit("experts_changed", "teams");
     Ok(())
 }
 
 // ── Tauri Commands: Expert CRUD ────────────────────────
+
+/// Read expert configs from a directory, adding scope field
+fn read_experts_from_dir(dir: &PathBuf, scope: &str) -> Vec<serde_json::Value> {
+    let mut experts = Vec::new();
+    if !dir.exists() { return experts; }
+    let entries = match std::fs::read_dir(dir) { Ok(e) => e, Err(_) => return experts };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                experts.push(serde_json::json!({
+                    "name": name,
+                    "content": content,
+                    "scope": scope,
+                }));
+            }
+        }
+    }
+    experts
+}
 
 #[tauri::command]
 pub async fn list_experts_configs(
@@ -443,63 +507,116 @@ pub async fn list_experts_configs(
         root.clone().ok_or("No workspace open")?
     };
 
-    let dir = experts_dir(&workspace);
-    if !dir.exists() {
-        return Ok(vec![]);
+    // Global first, local overrides by name
+    let mut experts_map = std::collections::HashMap::new();
+    for expert in read_experts_from_dir(&global_experts_dir(), "global") {
+        if let Some(name) = expert.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()) {
+            experts_map.insert(name, expert);
+        }
     }
-
-    let mut experts = Vec::new();
-    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("md") {
-            let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                experts.push(serde_json::json!({
-                    "name": name,
-                    "content": content,
-                }));
-            }
+    for expert in read_experts_from_dir(&experts_dir(&workspace), "local") {
+        if let Some(name) = expert.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()) {
+            experts_map.insert(name, expert); // local overrides global
         }
     }
 
-    Ok(experts)
+    Ok(experts_map.into_values().collect())
 }
 
 #[tauri::command]
 pub async fn save_expert_config(
     state: tauri::State<'_, super::AppState>,
+    app_handle: tauri::AppHandle,
     name: String,
     content: String,
+    scope: Option<String>,
 ) -> Result<(), String> {
     let workspace = {
         let root = state.workspace_root.lock().await;
         root.clone().ok_or("No workspace open")?
     };
 
-    let dir = experts_dir(&workspace);
+    let dir = resolve_experts_dir(&workspace, scope.as_deref().unwrap_or("local"));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     let file_path = dir.join(format!("{}.md", name));
     std::fs::write(&file_path, content).map_err(|e| e.to_string())?;
 
+    let _ = app_handle.emit("experts_changed", "experts");
     Ok(())
 }
 
 #[tauri::command]
 pub async fn delete_expert_config(
     state: tauri::State<'_, super::AppState>,
+    app_handle: tauri::AppHandle,
     name: String,
+    scope: Option<String>,
 ) -> Result<(), String> {
     let workspace = {
         let root = state.workspace_root.lock().await;
         root.clone().ok_or("No workspace open")?
     };
 
-    let file_path = experts_dir(&workspace).join(format!("{}.md", name));
+    let file_path = resolve_experts_dir(&workspace, scope.as_deref().unwrap_or("local")).join(format!("{}.md", name));
     if file_path.exists() {
         std::fs::remove_file(&file_path).map_err(|e| e.to_string())?;
     }
+    let _ = app_handle.emit("experts_changed", "experts");
+    Ok(())
+}
+
+/// Promote a local team (and its member experts) to global scope, or demote global to local
+#[tauri::command]
+pub async fn promote_expert_team(
+    state: tauri::State<'_, super::AppState>,
+    app_handle: tauri::AppHandle,
+    team_id: String,
+    to_scope: String,
+) -> Result<(), String> {
+    let workspace = {
+        let root = state.workspace_root.lock().await;
+        root.clone().ok_or("No workspace open")?
+    };
+
+    let (from_scope, from_teams, to_teams, from_experts, to_experts) = if to_scope == "global" {
+        ("local", teams_dir(&workspace), global_teams_dir(), experts_dir(&workspace), global_experts_dir())
+    } else {
+        ("global", global_teams_dir(), teams_dir(&workspace), global_experts_dir(), experts_dir(&workspace))
+    };
+
+    // Read team config
+    let from_file = from_teams.join(format!("{}.json", team_id));
+    if !from_file.exists() {
+        return Err(format!("Team '{}' not found in {} scope", team_id, from_scope));
+    }
+    let team_content = std::fs::read_to_string(&from_file).map_err(|e| e.to_string())?;
+    let team: serde_json::Value = serde_json::from_str(&team_content).map_err(|e| e.to_string())?;
+
+    // Move member experts
+    if let Some(members) = team.get("experts").and_then(|v| v.as_array()) {
+        std::fs::create_dir_all(&to_experts).map_err(|e| e.to_string())?;
+        for member in members {
+            if let Some(name) = member.as_str() {
+                let src = from_experts.join(format!("{}.md", name));
+                if src.exists() {
+                    let dst = to_experts.join(format!("{}.md", name));
+                    let content = std::fs::read_to_string(&src).map_err(|e| e.to_string())?;
+                    std::fs::write(&dst, &content).map_err(|e| e.to_string())?;
+                    let _ = std::fs::remove_file(&src);
+                }
+            }
+        }
+    }
+
+    // Move team file
+    std::fs::create_dir_all(&to_teams).map_err(|e| e.to_string())?;
+    let to_file = to_teams.join(format!("{}.json", team_id));
+    std::fs::write(&to_file, &team_content).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&from_file);
+
+    let _ = app_handle.emit("experts_changed", "all");
+    tracing::info!("Team '{}' promoted to {} scope", team_id, to_scope);
     Ok(())
 }
 

@@ -453,6 +453,29 @@ export function AgentPanel() {
     return () => { if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current); };
   }, []);
 
+  // Scroll to bottom when switching back to chat tab
+  useEffect(() => {
+    if (activeTab === "chat") {
+      setTimeout(() => {
+        scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+      }, 50);
+    }
+  }, [activeTab]);
+
+  // Ctrl+Delete (or Cmd+Backspace on Mac) to stop agent
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Delete") {
+        e.preventDefault();
+        if (useStreamStore.getState().agentActive) {
+          abortAgent().catch(() => {});
+        }
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, []);
+
   // Listen for snippet insertions from the editor
   useEffect(() => {
     const handler: SnippetListener = (payload) => {
@@ -1056,13 +1079,35 @@ const ChatBubble = React.memo(function ChatBubble({ message, userMessageIndex = 
             }
             {!message.streaming && (
               <div style={s.execSummaryWrap}>
-                <span style={s.execStatusBadge(message.executionStatus)}>
-                  {message.executionStatus === "changed_files"
-                    ? "CHANGED FILES"
-                    : message.executionStatus === "executed_no_changes"
-                    ? "EXECUTED (NO CHANGES)"
-                    : "ANALYZED"}
-                </span>
+                <div style={s.execSummaryRow}>
+                  <span style={s.execStatusBadge(message.executionStatus)}>
+                    {message.executionStatus === "changed_files"
+                      ? "CHANGED FILES"
+                      : message.executionStatus === "executed_no_changes"
+                      ? "EXECUTED (NO CHANGES)"
+                      : "ANALYZED"}
+                  </span>
+                  <button
+                    style={s.forkButton}
+                    onClick={async () => {
+                      try {
+                        const forkMsgs = await getForkMessages();
+                        if (forkMsgs.length === 0) {
+                          console.warn("[Tide] No forkable messages available");
+                          return;
+                        }
+                        const idx = Math.min(userMessageIndex, forkMsgs.length - 1);
+                        console.debug(`[Tide] Forking from entry ${idx}/${forkMsgs.length}: ${forkMsgs[idx].entryId}`);
+                        await forkSession(forkMsgs[idx].entryId);
+                      } catch (err) {
+                        console.error("[Tide] Fork failed:", err);
+                      }
+                    }}
+                    title="Fork session from this point"
+                  >
+                    Fork
+                  </button>
+                </div>
                 {message.changedFiles && message.changedFiles.length > 0 && (
                   <div style={s.execFilesList}>
                     {message.changedFiles.map((f) => (
@@ -1070,28 +1115,6 @@ const ChatBubble = React.memo(function ChatBubble({ message, userMessageIndex = 
                     ))}
                   </div>
                 )}
-                <button
-                  style={s.forkButton}
-                  onClick={async () => {
-                    try {
-                      const forkMsgs = await getForkMessages();
-                      if (forkMsgs.length === 0) {
-                        console.warn("[Tide] No forkable messages available");
-                        return;
-                      }
-                      // userMessageIndex points to the next user msg after this assistant.
-                      // If it's beyond the list, fork from the last available message.
-                      const idx = Math.min(userMessageIndex, forkMsgs.length - 1);
-                      console.debug(`[Tide] Forking from entry ${idx}/${forkMsgs.length}: ${forkMsgs[idx].entryId}`);
-                      await forkSession(forkMsgs[idx].entryId);
-                    } catch (err) {
-                      console.error("[Tide] Fork failed:", err);
-                    }
-                  }}
-                  title="Fork session from this point"
-                >
-                  Fork
-                </button>
               </div>
             )}
           </div>
@@ -1405,6 +1428,7 @@ const s: Record<string, React.CSSProperties> = {
   assistantRow: { display: "flex", flexDirection: "column", gap: 4, marginTop: 8 },
   assistantBubble: { padding: "2px 0" },
   execSummaryWrap: { marginTop: 8, display: "flex", flexDirection: "column", gap: 6 },
+  execSummaryRow: { display: "flex", alignItems: "center", gap: 8 },
   execStatusBadge: (status?: "analyzed" | "executed_no_changes" | "changed_files") => ({
     display: "inline-flex",
     alignItems: "center",
