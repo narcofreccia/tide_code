@@ -1,8 +1,15 @@
 import { create } from "zustand";
 import { useApprovalStore } from "./approvalStore";
-import { plansList, planDelete } from "../lib/ipc";
+import { plansList, planDelete, fsWriteFile } from "../lib/ipc";
+import { useWorkspaceStore } from "./workspace";
 
 // ── Types ───────────────────────────────────────────────────
+
+export interface ModelRef {
+  provider: string;
+  id: string;
+  name: string;
+}
 
 export interface PlanStep {
   id: string;
@@ -14,6 +21,7 @@ export interface PlanStep {
   expectedOutcome?: string;
   summary?: string;
   completedAt?: string;
+  assignedModel?: ModelRef;
 }
 
 export interface Plan {
@@ -25,6 +33,8 @@ export interface Plan {
   steps: PlanStep[];
   createdAt: string;
   updatedAt: string;
+  initialModel?: ModelRef;
+  context?: string;
 }
 
 interface PlanState {
@@ -36,11 +46,36 @@ interface PlanState {
   loadPlans: () => Promise<void>;
   deletePlan: (slug: string) => Promise<void>;
   clearActivePlan: () => void;
+  updateStep: (planSlug: string, stepId: string, patch: Partial<PlanStep>) => void;
+}
+
+// ── Debounced save helper ───────────────────────────────────
+
+let _saveTimeout: ReturnType<typeof setTimeout> | null = null;
+
+async function savePlanToDisk(plan: Plan) {
+  const rootPath = useWorkspaceStore.getState().rootPath;
+  if (!rootPath || !plan.slug) return;
+  const path = `${rootPath}/.tide/plans/${plan.slug}.json`;
+  const json = JSON.stringify(plan, null, 2);
+  try {
+    await fsWriteFile(path, json);
+  } catch (e) {
+    console.error("[plan] Failed to save plan:", e);
+  }
+}
+
+function debouncedSave(plan: Plan) {
+  if (_saveTimeout) clearTimeout(_saveTimeout);
+  _saveTimeout = setTimeout(() => {
+    _saveTimeout = null;
+    savePlanToDisk(plan);
+  }, 500);
 }
 
 // ── Store ───────────────────────────────────────────────────
 
-export const usePlanStore = create<PlanState>((set) => ({
+export const usePlanStore = create<PlanState>((set, get) => ({
   activePlan: null,
   plans: [],
   loading: false,
@@ -66,6 +101,7 @@ export const usePlanStore = create<PlanState>((set) => ({
   },
 
   deletePlan: async (slug: string) => {
+    if (_saveTimeout) clearTimeout(_saveTimeout);
     try {
       await planDelete(slug);
       set((state) => {
@@ -78,7 +114,32 @@ export const usePlanStore = create<PlanState>((set) => ({
     }
   },
 
-  clearActivePlan: () => set({ activePlan: null }),
+  clearActivePlan: () => {
+    if (_saveTimeout) clearTimeout(_saveTimeout);
+    set({ activePlan: null });
+  },
+
+  updateStep: (planSlug: string, stepId: string, patch: Partial<PlanStep>) => {
+    const { plans, activePlan } = get();
+
+    const patchPlan = (plan: Plan): Plan => {
+      const steps = plan.steps.map((st) =>
+        st.id === stepId ? { ...st, ...patch } : st,
+      );
+      return { ...plan, steps, updatedAt: new Date().toISOString() };
+    };
+
+    const updatedPlans = plans.map((p) =>
+      p.slug === planSlug ? patchPlan(p) : p,
+    );
+    const updatedActive =
+      activePlan?.slug === planSlug ? patchPlan(activePlan) : activePlan;
+
+    set({ plans: updatedPlans, activePlan: updatedActive });
+
+    const targetPlan = updatedPlans.find((p) => p.slug === planSlug);
+    if (targetPlan) debouncedSave(targetPlan);
+  },
 }));
 
 // ── Auto-subscribe to piStatus["planner"] ───────────────────

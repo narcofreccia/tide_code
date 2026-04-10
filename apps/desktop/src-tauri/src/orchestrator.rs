@@ -835,11 +835,20 @@ impl Orchestrator {
                 Results arrive summarized without polluting your context. If `tide_dispatch` is unavailable, \
                 explore manually using `tide_index_*` tools or `read`/`grep`.\n\
              {clarify_instruction}\
-             3. Create a detailed implementation plan using `tide_plan_create`. Each step MUST:\n\
-                - Describe CONCRETE code changes (what functions/components to add, modify, or refactor)\n\
-                - List EXACT file paths that will be modified (no wildcards like `src/*`)\n\
-                - Include expected outcome as a testable assertion\n\
-                - Be atomic: one logical change per step, small enough for a single agent turn\n\
+             3. Create a DETAILED implementation plan using `tide_plan_create`.\n\
+                Steps MUST be in strict execution order. Include ALL step types, not just code changes:\n\
+                - Package installs / dependency changes (BEFORE code that uses them)\n\
+                - Schema / migration / config changes (BEFORE code that references them)\n\
+                - Shared types / utilities (BEFORE code that imports them)\n\
+                - Code implementation steps (the actual feature work)\n\
+                - Build verification steps: `npm run build`, `cargo check`, etc. (AFTER code changes)\n\
+                - Integration / wiring steps and test steps (LAST)\n\n\
+                Each step MUST:\n\
+                - Describe EXACT changes: not 'Update X' but what to add, modify, remove, and why\n\
+                - List EXACT file paths (no wildcards like `src/*`)\n\
+                - Include shell commands to run if applicable (e.g., `npm install lodash`)\n\
+                - Include expected outcome as a testable assertion (e.g., '`npm run build` passes')\n\
+                - Be atomic: one logical change per step, executable without conversation history\n\
                 - NOT be \"write a spec\" or \"create documentation\" unless the user explicitly asked for docs\n\
              4. For each step, set the `assignedModel` field to right-size the model:\n\
                 {model_guidance}\
@@ -967,7 +976,8 @@ impl Orchestrator {
              CONSTRAINTS:\n\
              - ONLY modify files listed in Target files. Do NOT create, delete, or modify any other files.\n\
              - Do NOT delete files unless the step description explicitly requires it.\n\
-             - Make concrete code changes. Do not create documentation or spec files unless explicitly asked.\n\
+             - If the step requires running shell commands (install packages, run migrations, run builds), \
+               execute them using the bash/shell tool.\n\
              - If you need to modify a file not in the list, explain why in your summary but do NOT modify it.\n\n\
              When done:\n\
              1. Call `tide_plan_update` with planId=\"{plan_id}\", stepId=\"{step_id}\", status=\"completed\"\n\

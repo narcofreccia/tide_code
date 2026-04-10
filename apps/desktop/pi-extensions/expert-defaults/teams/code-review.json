@@ -6,6 +6,7 @@
   "leader": "architect",
   "debateRounds": 2,
   "timeLimitMinutes": 10,
+  "outputMode": "advisory",
   "createdAt": "2026-04-09T00:00:00Z",
   "updatedAt": "2026-04-09T00:00:00Z"
 }

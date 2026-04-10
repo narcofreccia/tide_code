@@ -183,6 +183,20 @@ function TeamEditor({
         />
       </div>
 
+      {/* Output Mode */}
+      <div style={s.fieldRow}>
+        <label style={s.fieldLabel}>Output Mode</label>
+        <select
+          style={s.select}
+          value={draft.outputMode || "execute"}
+          onChange={(e) => updateField("outputMode", e.target.value)}
+        >
+          <option value="execute">Execute — Plan & build from synthesis</option>
+          <option value="advisory">Advisory — Analysis & recommendations only</option>
+          <option value="document">Document — Save synthesis as documentation</option>
+        </select>
+      </div>
+
       {/* Debate Rounds & Time Limit */}
       <div style={s.fieldRowInline}>
         <div style={{ flex: 1 }}>

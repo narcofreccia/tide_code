@@ -137,17 +137,19 @@ const MessageBubble = memo(function MessageBubble({ msg }: MessageBubbleProps) {
   const isLeader = msg.from === "leader";
   const color = isLeader ? "var(--warning)" : expertColor(msg.from || "unknown");
   const hasRecipient = msg.to && msg.to !== "*" && msg.to !== "all" && msg.to !== "broadcast";
+  const displayName = (name: string | undefined | null) =>
+    name === "leader" ? "★ Team Leader" : (name || "unknown");
   return (
     <div style={{ ...s.expertBubble, borderLeftColor: color, ...(isLeader ? { borderLeftWidth: 3 } : {}) }}>
       <div style={s.expertHeader}>
         <span style={{ ...s.expertBadge, backgroundColor: `${color}22`, color }}>
-          {isLeader ? "★ Team Leader" : msg.from}
+          {displayName(msg.from)}
         </span>
         {hasRecipient && (
           <>
             <span style={s.arrowTo}>&rarr;</span>
             <span style={{ ...s.recipientBadge, color: expertColor(msg.to) }}>
-              {msg.to}
+              {displayName(msg.to)}
             </span>
           </>
         )}
@@ -245,6 +247,17 @@ export function ExpertsTab() {
         if (!sessions?.length) return;
         const recent = sessions[0]; // Already sorted by createdAt desc from Rust
         if (!recent?.id) return;
+
+        // Guard: if no activeSessionId, only adopt sessions created after startedAt
+        // This prevents loading old session messages while waiting for the new session
+        const storeState = useExpertsStore.getState();
+        if (!storeState.activeSessionId) {
+          if (storeState.startedAt && recent.createdAt) {
+            const sessionCreated = new Date(recent.createdAt).getTime();
+            if (sessionCreated < storeState.startedAt) return; // Old session, skip
+          }
+          useExpertsStore.setState({ activeSessionId: recent.id });
+        }
 
         // Fetch messages from outboxes
         const msgs = await getExpertsSessionMessages(recent.id);
@@ -350,6 +363,8 @@ export function ExpertsTab() {
       startedAt: Date.now(),
       timeLimitMinutes: selectedTeam?.timeLimitMinutes ?? 10,
       messages: [],
+      activeSessionId: null,
+      activeSession: null,
     });
     try {
       await startExpertsSession(selectedTeamId, topic.trim());
@@ -381,7 +396,7 @@ export function ExpertsTab() {
     }));
 
     try {
-      await sendExpertMessage(text, sendTarget ?? undefined);
+      await sendExpertMessage(text, sendTarget ?? undefined, userMsg.id);
     } catch (err) {
       console.error("[experts] Failed to send message:", err);
     }
@@ -400,7 +415,7 @@ export function ExpertsTab() {
 
   const [resuming, setResuming] = useState(false);
   const canResume = activeSession && !isActive &&
-    activeSession.phase !== "complete" && activeSession.phase !== "failed";
+    activeSession.phase !== "failed";
 
   const handleResume = useCallback(async () => {
     if (!activeSession) return;
@@ -452,6 +467,46 @@ export function ExpertsTab() {
       setExecuting(false);
     }
   }, [synthesisMsg, topic, activeSession]);
+
+  const handleCopyToChat = useCallback(async () => {
+    if (!synthesisMsg?.content) return;
+    const { useStreamStore } = await import("../../stores/stream");
+    const { addUserMessage } = useStreamStore.getState();
+    window.dispatchEvent(new CustomEvent("tide:switch-tab", { detail: "chat" }));
+    addUserMessage(
+      `## Expert Synthesis: ${topic}\n\n${synthesisMsg.content}\n\n` +
+      `---\n*This synthesis was produced by the ${selectedTeam?.name ?? "expert"} team. ` +
+      `Please review and discuss.*`,
+    );
+  }, [synthesisMsg, topic, selectedTeam]);
+
+  const [reportSaved, setReportSaved] = useState(false);
+
+  const handleSaveReport = useCallback(async () => {
+    if (!synthesisMsg?.content) return;
+    try {
+      const { fsWriteFile, fsCreateDir } = await import("../../lib/ipc");
+      const { useWorkspaceStore } = await import("../../stores/workspace");
+      const rootPath = useWorkspaceStore.getState().rootPath;
+      if (!rootPath) return;
+      const reportsDir = `${rootPath}/.tide/reports`;
+      await fsCreateDir(reportsDir);
+      const slug = (topic || "report").toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 60);
+      const timestamp = new Date().toISOString().split("T")[0];
+      const filename = `${timestamp}-${slug}.md`;
+      const content =
+        `# ${topic}\n\n` +
+        `> Team: ${selectedTeam?.name ?? "Experts"} | Date: ${timestamp}\n\n` +
+        `${synthesisMsg.content}\n`;
+      await fsWriteFile(`${reportsDir}/${filename}`, content);
+      setReportSaved(true);
+      setTimeout(() => setReportSaved(false), 3000);
+    } catch (err) {
+      console.error("[experts] Failed to save report:", err);
+    }
+  }, [synthesisMsg, topic, selectedTeam]);
+
+  const outputMode = selectedTeam?.outputMode || "execute";
 
   // ── Render: Active Session (Group Chat) ────────────────
 
@@ -560,7 +615,13 @@ export function ExpertsTab() {
                     onClick={handleExecuteViaOrchestrator}
                     disabled={executing}
                   >
-                    {executing ? "Starting..." : "▶ Plan & Execute"}
+                    {executing ? "Starting..." : "▶ Send to Chat"}
+                  </button>
+                  <button
+                    style={s.newSessionBtn}
+                    onClick={handleSaveReport}
+                  >
+                    {reportSaved ? "Saved!" : "Save Report"}
                   </button>
                   <button style={s.newSessionBtn} onClick={handleNewSession}>
                     New Session

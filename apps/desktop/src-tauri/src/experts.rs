@@ -278,6 +278,7 @@ pub async fn send_expert_message(
     state: tauri::State<'_, super::AppState>,
     content: String,
     to: Option<String>,
+    msg_id: Option<String>,
 ) -> Result<(), String> {
     let sessions_root = {
         let guard = state.experts_session_dir.lock().await;
@@ -298,10 +299,10 @@ pub async fn send_expert_message(
         return Err("Session mailboxes directory not found".to_string());
     }
 
-    let msg_id = format!("msg-user-{}", std::time::SystemTime::now()
+    let msg_id = msg_id.unwrap_or_else(|| format!("msg-user-{}", std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
-        .unwrap_or(0));
+        .unwrap_or(0)));
 
     let timestamp = {
         let now = std::time::SystemTime::now()
@@ -375,6 +376,10 @@ pub async fn list_expert_teams(
                         if let Some(judge) = team.get("judge").cloned() {
                             team.as_object_mut().map(|o| o.insert("leader".to_string(), judge));
                         }
+                    }
+                    // Default outputMode to "execute" if missing
+                    if team.get("outputMode").is_none() {
+                        team.as_object_mut().map(|o| o.insert("outputMode".to_string(), serde_json::json!("execute")));
                     }
                     teams.push(team);
                 }

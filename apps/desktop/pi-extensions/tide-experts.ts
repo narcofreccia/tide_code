@@ -55,6 +55,7 @@ interface TeamConfig {
   debateRounds: number;
   timeLimitMinutes: number;
   defaultModel?: ModelRef;
+  outputMode?: "execute" | "advisory" | "document";
   createdAt: string;
   updatedAt: string;
 }
@@ -224,6 +225,47 @@ function countFindings(sessionDir: string, agentName: string): number {
 }
 
 // ── Brainstorming Engine ───────────────────────────────
+
+function buildSynthesisInstructions(outputMode: string): { sections: string; brief: string } {
+  if (outputMode === "advisory") {
+    return {
+      sections:
+        "## Summary\nConcise overview of what was analyzed and key findings.\n\n" +
+        "## Analysis\nDetailed analysis organized by topic area. Cite specific files, functions, and line numbers.\n\n" +
+        "## Recommendations\nPrioritized recommendations with reasoning and trade-offs for each.\n\n" +
+        "## Risks & Concerns\nIdentified risks, their likelihood and severity, and suggested mitigations.\n\n" +
+        "## Open Questions\nAnything that needs further investigation or stakeholder input.\n\n",
+      brief:
+        "Produce a thorough analysis and advisory report. Focus on insights, recommendations, and trade-offs. " +
+        "Do NOT include implementation steps or action items for code changes — this is advisory only.",
+    };
+  }
+  if (outputMode === "document") {
+    return {
+      sections:
+        "## Overview\nWhat this document covers and why.\n\n" +
+        "## Background\nContext and motivation.\n\n" +
+        "## Analysis\nDetailed findings organized by area, with file/code references.\n\n" +
+        "## Architecture & Design\nKey patterns, structures, and design decisions found.\n\n" +
+        "## Recommendations\nSuggested improvements or next steps.\n\n" +
+        "## References\nKey files, external resources, and related documentation.\n\n",
+      brief:
+        "Produce a well-structured document suitable for saving as project documentation. " +
+        "Write in a clear, reference-style tone. Include code references and file paths.",
+    };
+  }
+  // execute (default)
+  return {
+    sections:
+      "## Consensus\nWhat all experts agree on.\n\n" +
+      "## Disagreements & Rulings\nFor each disagreement, state who said what and **your ruling** with reasoning. Don't leave anything unresolved.\n\n" +
+      "## Final Recommendation\nYour single, clear recommendation. Be specific and actionable — not vague.\n\n" +
+      "## Action Items\nNumbered list of concrete next steps, prioritized by impact.\n\n" +
+      "## Risk Assessment\nOverall risk level (low/medium/high) with reasoning.\n\n",
+    brief:
+      "Produce your FINAL VERDICT: consensus, disagreements (with rulings), recommendations, action items, and risk level.",
+  };
+}
 
 async function runBrainstormSession(opts: {
   topic: string;
@@ -467,16 +509,15 @@ async function runBrainstormSession(opts: {
           }
         }
 
-        // Steer leader to produce final verdict
+        // Steer leader to produce final synthesis
         const leaderTimeLimitAgent = agents.find(a => a.name === "leader");
         if (leaderTimeLimitAgent && !leaderTimeLimitAgent.exited) {
+          const synth = buildSynthesisInstructions(team.outputMode || "execute");
           leaderTimeLimitAgent.steer(
             "[TIME LIMIT REACHED] The brainstorming time limit has expired. " +
             "Read all messages and the shared findings board. " +
-            "As Team Leader, produce your FINAL VERDICT now: " +
-            "consensus points, disagreements (with your ruling), recommendations, action items, and risk level. " +
-            "Note any unresolved threads. " +
-            'Broadcast your verdict: type="observation", content="[SYNTHESIS] {your verdict}"'
+            synth.brief + " Note any unresolved threads. " +
+            'Broadcast your synthesis: type="observation", content="[SYNTHESIS] {your synthesis}"'
           );
         }
       } else if (elapsed >= warningMs && !warningIssued) {
@@ -585,19 +626,17 @@ async function runBrainstormSession(opts: {
 
           // Only send verdict prompt if the timer didn't already steer the leader
           if (!timeLimitHit) {
+            const synth = buildSynthesisInstructions(team.outputMode || "execute");
             await leaderSynthAgent.prompt(
-              "The discussion phase is complete. As **Team Leader**, produce your **FINAL VERDICT**.\n\n" +
+              "The discussion phase is complete. As **Team Leader**, produce your **FINAL SYNTHESIS**.\n\n" +
               "1. Use **check_messages** to read ALL messages from the entire session\n" +
               "2. Use **read_findings** to see all shared findings\n" +
               "3. You have heard from every expert. Now **make the call**.\n\n" +
-              "Produce a structured verdict with these sections:\n\n" +
-              "## Consensus\nWhat all experts agree on.\n\n" +
-              "## Disagreements & Rulings\nFor each disagreement, state who said what and **your ruling** with reasoning. Don't leave anything unresolved.\n\n" +
-              "## Final Recommendation\nYour single, clear recommendation. Be specific and actionable — not vague.\n\n" +
-              "## Action Items\nNumbered list of concrete next steps, prioritized by impact.\n\n" +
-              "## Risk Assessment\nOverall risk level (low/medium/high) with reasoning.\n\n" +
-              "Broadcast your verdict: " +
-              'type="observation", content="[SYNTHESIS] {your full verdict}"'
+              synth.brief + "\n\n" +
+              "Produce a structured output with these sections:\n\n" +
+              synth.sections +
+              "Broadcast your synthesis: " +
+              'type="observation", content="[SYNTHESIS] {your full synthesis}"'
             );
           }
 

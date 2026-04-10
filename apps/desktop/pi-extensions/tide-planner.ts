@@ -177,11 +177,27 @@ export default function tidePlanner(pi: ExtensionAPI) {
         "with specific questions. Each question should have 2-4 concrete suggested answers. " +
         "Examples: technology choices, scope boundaries, error handling strategy, testing approach.\n\n" +
         "### Step 3: Create Plan\n" +
-        "Call `tide_plan_create` with a DETAILED plan. Each step MUST include:\n" +
+        "Call `tide_plan_create` with an EXTREMELY DETAILED plan.\n\n" +
+        "**Step Ordering**: Steps MUST be in strict execution order. Every step must be executable " +
+        "immediately after its predecessors complete. Think about the real workflow:\n" +
+        "- Package installs/dependency changes come BEFORE code that uses them\n" +
+        "- Schema/migration changes come BEFORE code that references new fields\n" +
+        "- Shared utilities/types come BEFORE code that imports them\n" +
+        "- Configuration changes come BEFORE code that reads the config\n" +
+        "- Build/compile verification steps come AFTER code changes\n\n" +
+        "**Step Types** — plans are NOT just code changes. Include ALL necessary steps:\n" +
+        "- **Dependency steps**: `npm install X`, `cargo add Y`, version bumps in package.json\n" +
+        "- **Migration/schema steps**: database migrations, config schema changes, env var additions\n" +
+        "- **Configuration steps**: .env changes, config file updates, feature flag setup\n" +
+        "- **Code change steps**: the actual implementation (functions, components, types, etc.)\n" +
+        "- **Verification steps**: `npm run build`, `npm test`, `cargo check`, manual test instructions\n" +
+        "- **Integration steps**: wiring components together, updating imports, registering routes/commands\n\n" +
+        "**Step Detail** — each step description MUST include:\n" +
         "- **Specific file paths** for every file to create or modify\n" +
-        "- **Detailed description**: not just 'Update X' but exactly what changes, why, and how\n" +
-        "- **Dependencies**: which step IDs must complete before this one can start\n" +
-        "- **Expected outcome**: what the codebase should look like after this step\n" +
+        "- **Exact changes**: not 'Update X' but what functions to add, what imports to change, what lines to modify\n" +
+        "- **Shell commands to run** (if applicable): exact `npm install`, `npx migrate`, `cargo add` commands\n" +
+        "- **Dependencies**: which step IDs must complete first\n" +
+        "- **Expected outcome**: a testable assertion (e.g., '`npm run build` passes', 'new endpoint returns 200')\n" +
         "- **Atomic scope**: each step should be small enough that a different model could execute it " +
         "with only the step description and plan context (no conversation history needed)\n\n" +
         "### Step 4: Execute\n" +
@@ -282,11 +298,15 @@ export default function tidePlanner(pi: ExtensionAPI) {
     label: "Create Plan",
     description:
       "Create a structured implementation plan for a complex task. " +
+      "Steps must be in strict execution order and include ALL necessary work: " +
+      "dependency installs, migrations, config, code changes, and verification. " +
       "The plan is saved to .tide/plans/ and displayed in the Plan tab.",
     promptSnippet: "Create a structured implementation plan with steps",
     promptGuidelines: [
+      "Steps must be in STRICT execution order — dependencies first, verification last",
+      "Include ALL step types: package installs, migrations, config, code, build verification",
+      "Each step description must include exact file paths, specific changes, and shell commands if applicable",
       "Each step should be atomic — small enough for a single agent to execute with only the step description",
-      "Include specific file paths, not vague references like 'update the config'",
       "Set dependencies between steps when order matters",
     ],
     parameters: Type.Object({

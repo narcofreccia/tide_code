@@ -658,6 +658,8 @@ export async function ptyKill(ptyId: string): Promise<void> {
 
 // ── Expert Teams & Sessions ───────────────────────────────
 
+export type TeamOutputMode = "execute" | "advisory" | "document";
+
 export interface TeamConfig {
   id: string;
   name: string;
@@ -667,6 +669,7 @@ export interface TeamConfig {
   debateRounds: number;
   timeLimitMinutes: number;
   defaultModel?: { provider: string; id: string };
+  outputMode?: TeamOutputMode;
   createdAt: string;
   updatedAt: string;
 }
@@ -752,6 +755,6 @@ export async function startExpertsSession(teamId: string, topic: string): Promis
 export async function resumeExpertsSession(sessionId: string): Promise<void> {
   await invoke("resume_experts_session", { sessionId });
 }
-export async function sendExpertMessage(content: string, to?: string): Promise<void> {
-  await invoke("send_expert_message", { content, to: to ?? null });
+export async function sendExpertMessage(content: string, to?: string, msgId?: string): Promise<void> {
+  await invoke("send_expert_message", { content, to: to ?? null, msgId: msgId ?? null });
 }

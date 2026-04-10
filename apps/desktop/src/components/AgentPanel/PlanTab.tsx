@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { usePlanStore, type Plan, type PlanStep } from "../../stores/planStore";
-import { useStreamStore } from "../../stores/stream";
+import { useStreamStore, type AvailableModel } from "../../stores/stream";
 import { useWorkspaceStore } from "../../stores/workspace";
 import { useOrchestrationStore } from "../../stores/orchestrationStore";
 import { openFileByPath } from "../../lib/fileHelpers";
@@ -35,6 +35,16 @@ const PLAN_STATUS_DOT: Record<Plan["status"], string> = {
   completed: "var(--success, #4ade80)",
   failed: "var(--error, #f87171)",
 };
+
+const STATUS_CYCLE: PlanStep["status"][] = ["pending", "in_progress", "completed", "skipped"];
+
+function groupByProvider(models: AvailableModel[]) {
+  const groups: Record<string, AvailableModel[]> = {};
+  for (const m of models) {
+    (groups[m.provider] ??= []).push(m);
+  }
+  return groups;
+}
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -237,7 +247,7 @@ export function PlanTab() {
           {/* Steps */}
           <div style={s.steps}>
             {plan.steps.map((step) => (
-              <StepItem key={step.id} step={step} />
+              <StepItem key={step.id} step={step} planSlug={plan.slug} />
             ))}
           </div>
         </>
@@ -343,13 +353,62 @@ function PlanActions({ plan }: { plan: Plan }) {
 
 // ── Step Item ───────────────────────────────────────────────
 
-function StepItem({ step }: { step: PlanStep }) {
+function StepItem({ step, planSlug }: { step: PlanStep; planSlug: string }) {
   const [expanded, setExpanded] = useState(step.status === "in_progress");
+  const [desc, setDesc] = useState(step.description);
+  const availableModels = useStreamStore((s) => s.availableModels);
+  const updateStep = usePlanStore((s) => s.updateStep);
+  const isEditable = !!planSlug;
+
+  useEffect(() => setDesc(step.description), [step.description]);
+
+  const handleCycleStatus = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!isEditable) return;
+    const idx = STATUS_CYCLE.indexOf(step.status);
+    const next = STATUS_CYCLE[(idx + 1) % STATUS_CYCLE.length];
+    updateStep(planSlug, step.id, { status: next });
+  };
+
+  const handleDescBlur = () => {
+    if (desc !== step.description) {
+      updateStep(planSlug, step.id, { description: desc });
+    }
+  };
+
+  const handleModelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const val = e.target.value;
+    if (!val) {
+      updateStep(planSlug, step.id, { assignedModel: undefined });
+      return;
+    }
+    const slashIdx = val.indexOf("/");
+    const provider = val.slice(0, slashIdx);
+    const id = val.slice(slashIdx + 1);
+    const model = availableModels.find((m) => m.provider === provider && m.id === id);
+    updateStep(planSlug, step.id, {
+      assignedModel: { provider, id, name: model?.name || id },
+    });
+  };
+
+  const modelValue = step.assignedModel
+    ? `${step.assignedModel.provider}/${step.assignedModel.id}`
+    : "";
+  const grouped = groupByProvider(availableModels);
 
   return (
     <div style={s.step}>
       <button style={s.stepHeader} onClick={() => setExpanded(!expanded)}>
-        <span style={{ color: STATUS_COLORS[step.status], marginRight: 6 }}>
+        <span
+          role="button"
+          title={`Status: ${step.status} (click to cycle)`}
+          style={{
+            color: STATUS_COLORS[step.status],
+            marginRight: 6,
+            cursor: isEditable ? "pointer" : "default",
+          }}
+          onClick={handleCycleStatus}
+        >
           {STATUS_ICONS[step.status]}
         </span>
         <span
@@ -364,7 +423,40 @@ function StepItem({ step }: { step: PlanStep }) {
 
       {expanded && (
         <div style={s.stepBody}>
-          <p style={s.stepDesc}>{step.description}</p>
+          {isEditable ? (
+            <textarea
+              style={s.stepDescEdit}
+              value={desc}
+              onChange={(e) => setDesc(e.target.value)}
+              onBlur={handleDescBlur}
+              rows={3}
+            />
+          ) : (
+            <p style={s.stepDesc}>{step.description}</p>
+          )}
+
+          {isEditable && availableModels.length > 0 && (
+            <div style={s.modelRow}>
+              <label style={s.modelLabel}>Model</label>
+              <select
+                style={s.stepModelSelect}
+                value={modelValue}
+                onChange={handleModelChange}
+              >
+                <option value="">Plan default</option>
+                {Object.entries(grouped).map(([provider, models]) => (
+                  <optgroup key={provider} label={provider}>
+                    {models.map((m) => (
+                      <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
+                        {m.name || m.id}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </div>
+          )}
+
           {step.files && step.files.length > 0 && (
             <div style={s.stepFiles}>
               {step.files.map((f) => (
@@ -684,6 +776,43 @@ const s: Record<string, React.CSSProperties> = {
     color: "var(--text-secondary)",
     margin: 0,
     lineHeight: 1.4,
+  },
+  stepDescEdit: {
+    fontFamily: "var(--font-ui)",
+    fontSize: "var(--font-size-xs)",
+    color: "var(--text-secondary)",
+    margin: 0,
+    lineHeight: 1.4,
+    width: "100%",
+    background: "transparent",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-sm)",
+    padding: "4px 6px",
+    resize: "vertical" as const,
+    outline: "none",
+  },
+  modelRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 2,
+  },
+  modelLabel: {
+    fontFamily: "var(--font-ui)",
+    fontSize: "var(--font-size-xs)",
+    color: "var(--text-secondary)",
+    flexShrink: 0,
+  },
+  stepModelSelect: {
+    fontFamily: "var(--font-ui)",
+    fontSize: "var(--font-size-xs)",
+    color: "var(--text-primary)",
+    background: "var(--bg-secondary)",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-sm)",
+    padding: "2px 6px",
+    flex: 1,
+    maxWidth: 220,
   },
   stepFiles: {
     display: "flex",
