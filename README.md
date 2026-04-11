@@ -1,8 +1,12 @@
 # Tide
 
+> **Now available on Windows!** Tide runs natively on Windows 10/11 with full feature parity -- PTY terminal (PowerShell/cmd), Windows Credential Manager for secure key storage, MSVC build toolchain support, and NSIS/MSI installers. See the [Windows setup guide](./WIN.md) for details.
+
 An AI-native code editor with orchestrated multi-step workflows and multi-agent collaboration, built on [Tauri v2](https://v2.tauri.app) and the [Pi coding agent](https://shittycodingagent.ai) (v0.66.1).
 
 Tide wraps Pi as a sidecar process, adding a full IDE around it: Monaco editor, file tree, integrated terminal, codebase indexing, project memory, an orchestration engine that breaks complex tasks into plan-build-review pipelines, and an Agent Experts mode where multiple AI agents brainstorm together via peer-to-peer messaging.
+
+**Platforms:** macOS 12+ | Windows 10/11 | Linux (planned)
 
 ## What Makes Tide Different
 
@@ -18,7 +22,7 @@ Tide wraps Pi as a sidecar process, adding a full IDE around it: Monaco editor, 
 
 **Cost-aware model routing** -- Simple edits use fast, cheap models. Multi-file architecture tasks get routed to powerful models. The router classifies every prompt and picks the best model for the job.
 
-**Editable editor** -- Full read-write Monaco editor with Cmd+S save, dirty state tracking, and Tokyo Night theme. Not just a viewer.
+**Editable editor** -- Full read-write Monaco editor with Cmd+S / Ctrl+S save, dirty state tracking, and Tokyo Night theme. Not just a viewer.
 
 **Agent Experts** -- Assemble teams of expert agents (architect, security, performance, UX, devil's advocate) that brainstorm together via peer-to-peer messaging. Each expert has its own model, temperature, and system prompt. Experts explore code, share findings, challenge each other's reasoning, and produce a synthesized recommendation. Configurable time limits with automatic convergence. Feed the synthesis directly into the orchestration pipeline.
 
@@ -62,7 +66,7 @@ Tide wraps Pi as a sidecar process, adding a full IDE around it: Monaco editor, 
 Tide runs Pi as a sidecar process in RPC mode. On startup:
 
 1. **Sidecar resolution** -- Rust finds the Pi binary: checks `binaries/pi-sidecar-{target-triple}` (production bundle), then `node_modules` (dev), then PATH
-2. **API key injection** -- Reads keys from macOS Keychain, injects as environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `TAVILY_API_KEY`). Pi also supports OAuth2 login for subscription providers (ChatGPT Plus/Pro Codex, Claude Pro/Max, GitHub Copilot, Gemini CLI) with credentials cached in `~/.pi/agent/auth.json`.
+2. **API key injection** -- Reads keys from the platform credential store (macOS Keychain or Windows Credential Manager), injects as environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `TAVILY_API_KEY`). Pi also supports OAuth2 login for subscription providers (ChatGPT Plus/Pro Codex, Claude Pro/Max, GitHub Copilot, Gemini CLI) with credentials cached in `~/.pi/agent/auth.json`.
 3. **Extension loading** -- Passes 12 custom extensions via `-e` flags
 4. **JSON-RPC bridge** -- Rust reads Pi's stdout line-by-line, parses events, and emits them as Tauri events to the React frontend
 
@@ -84,7 +88,7 @@ The agent can search your entire codebase by symbol name, find all symbols in a 
 
 ### Orchestration Engine
 
-When you send a complex prompt (detected automatically or forced with Cmd+Enter):
+When you send a complex prompt (detected automatically or forced with Cmd+Enter / Ctrl+Enter):
 
 1. **Routing** -- `tide-classify.ts` analyzes complexity, `tide-router.ts` selects the appropriate model tier
 2. **Planning** -- Pi generates a structured plan with steps, files, and acceptance criteria. Optionally asks clarifying questions. Writes a research cache to `.tide/research.md`.
@@ -140,18 +144,29 @@ tide_code/
 
 See [PROJECT.md](./PROJECT.md) for the complete file-by-file structure.
 
+## Tutorial
+
+New to Tide Code? The **[TaskFlow Tutorial](./TUTORIAL.md)** walks you through building a full-stack todolist app (React + FastAPI + HTML/CSS/JS) while learning every feature of the IDE — from basic editing to AI-powered orchestration. It covers all 12 major features across 12 chapters and takes 3-5 hours to complete.
+
 ## Quick Links
 
+- [TUTORIAL.md](./TUTORIAL.md) -- Step-by-step tutorial building a full-stack app with Tide Code
 - [QUICKSTART.md](./QUICKSTART.md) -- Development setup and running locally
+- [WIN.md](./WIN.md) -- Windows port implementation details
 - [PROJECT.md](./PROJECT.md) -- Detailed architecture, data flows, and design decisions
 
 ## Requirements
 
-- **Node.js** >= 20
-- **pnpm** (package manager)
-- **Rust** (stable toolchain, installed via rustup)
-- **macOS** 12+ (primary platform; Linux support planned)
-- At least one LLM API key (Anthropic, OpenAI, or Google) or an OAuth-supported subscription (ChatGPT Plus/Pro, GitHub Copilot, etc.)
+| | macOS | Windows |
+|---|---|---|
+| **OS** | macOS 12+ | Windows 10/11 |
+| **Node.js** | >= 20 | >= 20 |
+| **pnpm** | latest | latest |
+| **Rust** | stable (via rustup) | stable (via rustup) |
+| **Build tools** | Xcode CLT | Visual Studio Build Tools 2022 ("Desktop development with C++" workload) |
+| **WebView** | Built-in (WebKit) | WebView2 (pre-installed on Win 10/11) |
+
+Plus at least one LLM API key (Anthropic, OpenAI, or Google) or an OAuth-supported subscription (ChatGPT Plus/Pro, GitHub Copilot, Gemini CLI, etc.).
 
 ## License
 

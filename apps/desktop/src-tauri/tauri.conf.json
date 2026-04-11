@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
     "beforeBuildCommand": "pnpm build",
-    "beforeDevCommand": "lsof -ti:5173 | xargs kill -9 2>/dev/null; pnpm dev"
+    "beforeDevCommand": "pnpm dev"
   },
   "app": {
     "windows": [
@@ -34,7 +34,8 @@
       "binaries/pi-sidecar"
     ],
     "resources": [
-      "resources/pi-extensions/*"
+      "resources/pi-extensions/*",
+      "resources/pi-assets/**/*"
     ],
     "icon": [
       "icons/32x32.png",
@@ -47,13 +48,23 @@
       "signingIdentity": null,
       "entitlements": null,
       "minimumSystemVersion": "12.0"
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.digicert.com",
+      "nsis": {
+        "installMode": "both",
+        "displayLanguageSelector": false
+      },
+      "wix": null
     }
   },
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQyQURBQUU0NUE1QzZERUUKUldUdWJWeGE1S3F0UXVHQ0g0VDZxTTVXZzN1OXl2eGs2b3V4YzQwS3dLNHkvSlRCNzFtbGtYbEEK",
       "endpoints": [
-        "https://YOUR_UPDATE_SERVER/tidecode/latest.json"
+        "https://github.com/seanrobertwright/tide_code/releases/latest/download/latest.json"
       ]
     }
   }

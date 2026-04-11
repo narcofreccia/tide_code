@@ -19,7 +19,10 @@ interface ExpertCardProps {
 
 // ── Status config ──────────────────────────────────────────
 
-const STATUS_CONFIG: Record<string, { color: string; icon: string; label: string }> = {
+const STATUS_CONFIG: Record<
+  string,
+  { color: string; icon: string; label: string }
+> = {
   pending: { color: "var(--text-secondary)", icon: "○", label: "Pending" },
   running: { color: "var(--warning)", icon: "◑", label: "Running" },
   thinking: { color: "var(--warning)", icon: "◑", label: "Thinking" },
@@ -48,7 +51,7 @@ export const ExpertCard = React.memo(function ExpertCard({
   const setSelectedExpert = useExpertsStore((s) => s.setSelectedExpert);
   const setViewMode = useExpertsStore((s) => s.setViewMode);
 
-  const isExpanded = expandedCards.has(expert.name);
+  const isExpanded = !!expandedCards[expert.name];
   const sc = getStatusConfig(expert.status);
 
   // Messages from this expert
@@ -124,7 +127,8 @@ export const ExpertCard = React.memo(function ExpertCard({
               <div style={s.messageMeta}>
                 <span style={s.messageType}>{msg.type}</span>
                 <span style={s.messageArrow}>
-                  {msg.from} {"-> "}{msg.to === "*" ? "all" : msg.to}
+                  {msg.from} {"-> "}
+                  {msg.to === "*" ? "all" : msg.to}
                 </span>
                 <span style={s.messageTime}>
                   {new Date(msg.timestamp).toLocaleTimeString()}
