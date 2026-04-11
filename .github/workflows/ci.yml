@@ -52,7 +52,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop/src-tauri -> target
-          shared-key: ${{ matrix.os }}-build
+          shared-key: ${{ matrix.os }}-build-v2
 
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -84,10 +84,11 @@ jobs:
       - name: Create sidecar placeholder
         shell: bash
         run: |
-          # Use a placeholder so the Tauri build script validates without the
+          # Create a placeholder so the Tauri build script validates without the
           # full Pi sidecar binary. Real sidecar is built in release.yml.
           mkdir -p apps/desktop/src-tauri/binaries
-          touch "apps/desktop/src-tauri/binaries/${{ matrix.sidecar }}"
+          echo "placeholder" > "apps/desktop/src-tauri/binaries/${{ matrix.sidecar }}"
+          ls -la apps/desktop/src-tauri/binaries/
 
       - name: Run frontend tests
         working-directory: apps/desktop
