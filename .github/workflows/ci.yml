@@ -85,6 +85,10 @@ jobs:
         working-directory: apps/desktop
         run: pnpm test
 
+      - name: Build frontend
+        working-directory: apps/desktop
+        run: pnpm build
+
       - name: Run Rust tests
         working-directory: apps/desktop/src-tauri
         run: cargo test --target ${{ matrix.target }}
