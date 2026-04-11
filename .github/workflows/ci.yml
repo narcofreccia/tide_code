@@ -97,6 +97,9 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # CI validates the build but doesn't sign updater artifacts —
+          # that requires TAURI_SIGNING_PRIVATE_KEY, handled in release.yml.
+          TAURI_CONFIG: '{"bundle":{"createUpdaterArtifacts":false}}'
         with:
           projectPath: apps/desktop
           args: --target ${{ matrix.target }}
