@@ -93,16 +93,21 @@ jobs:
         working-directory: apps/desktop/src-tauri
         run: cargo test --target ${{ matrix.target }}
 
+      # CI validates the full build but shouldn't sign updater artifacts —
+      # that requires TAURI_SIGNING_PRIVATE_KEY, handled in release.yml. The
+      # TAURI_CONFIG env var is not reliably merged by tauri-action, so we
+      # write an overlay file and pass `-c` through args instead.
+      - name: Write CI tauri overlay config
+        shell: bash
+        run: echo '{"bundle":{"createUpdaterArtifacts":false}}' > apps/desktop/src-tauri/tauri.ci.conf.json
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # CI validates the build but doesn't sign updater artifacts —
-          # that requires TAURI_SIGNING_PRIVATE_KEY, handled in release.yml.
-          TAURI_CONFIG: '{"bundle":{"createUpdaterArtifacts":false}}'
         with:
           projectPath: apps/desktop
-          args: --target ${{ matrix.target }}
+          args: --target ${{ matrix.target }} -c src-tauri/tauri.ci.conf.json
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
