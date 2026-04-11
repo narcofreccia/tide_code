@@ -2,16 +2,25 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 
 // Mock the dependent stores and ipc before importing stream
 vi.mock("../../stores/contextStore", () => ({
-  useContextStore: { getState: () => ({ setContext: vi.fn() }), setState: vi.fn() },
+  useContextStore: {
+    getState: () => ({ setContext: vi.fn(), updateFromPiState: vi.fn() }),
+    setState: vi.fn(),
+  },
 }));
 vi.mock("../../stores/logStore", () => ({
   useLogStore: { getState: () => ({ addLog: vi.fn() }), setState: vi.fn() },
 }));
 vi.mock("../../stores/orchestrationStore", () => ({
-  useOrchestrationStore: { getState: () => ({ phase: null }), setState: vi.fn() },
+  useOrchestrationStore: {
+    getState: () => ({ phase: null }),
+    setState: vi.fn(),
+  },
 }));
 vi.mock("../../stores/workspace", () => ({
-  useWorkspaceStore: { getState: () => ({ reloadTabsFromDisk: vi.fn() }), setState: vi.fn() },
+  useWorkspaceStore: {
+    getState: () => ({ reloadTabsFromDisk: vi.fn() }),
+    setState: vi.fn(),
+  },
 }));
 vi.mock("../../lib/ipc", () => ({
   followUp: vi.fn(),
@@ -60,7 +69,9 @@ describe("useStreamStore", () => {
 
     expect(msgs).toHaveLength(1);
     expect(msgs[0].role).toBe("user");
-    expect((msgs[0] as Extract<ChatMessage, { role: "user" }>).content).toBe("Hello, world!");
+    expect((msgs[0] as Extract<ChatMessage, { role: "user" }>).content).toBe(
+      "Hello, world!",
+    );
   });
 
   it("generates unique message IDs", () => {
