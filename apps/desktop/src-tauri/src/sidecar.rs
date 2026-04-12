@@ -386,6 +386,22 @@ fn target_triple() -> &'static str {
     { "aarch64-unknown-linux-gnu" }
 }
 
+ fn resolve_bundled_sidecar(base_dir: &std::path::Path) -> Option<PathBuf> {
+     let sidecar_name = format!("pi-sidecar-{}", target_triple());
+     let bundled = base_dir.join(&sidecar_name);
+     if bundled.exists() {
+         return Some(bundled);
+     }
+     #[cfg(windows)]
+     {
+         let bundled_exe = base_dir.join(format!("{}.exe", sidecar_name));
+         if bundled_exe.exists() {
+             return Some(bundled_exe);
+         }
+     }
+     None
+ }
+
 /// Resolve the path to bundled Pi assets (resources/pi-assets/).
 /// Tauri places resources alongside the main exe on Windows, and in
 /// Contents/Resources/ on macOS. Returns None if not in a bundled context.
@@ -394,9 +410,7 @@ fn resolve_pi_assets_dir() -> Option<String> {
     let exe_dir = exe.parent()?;
 
     // Check if we're using the bundled sidecar (not dev mode)
-    let sidecar_name = format!("pi-sidecar-{}", target_triple());
-    let bundled = exe_dir.join(&sidecar_name);
-    if !bundled.exists() {
+    if resolve_bundled_sidecar(exe_dir).is_none() {
         return None;
     }
 
@@ -430,9 +444,7 @@ pub fn resolve_pi_path() -> Result<String, Box<dyn std::error::Error + Send + Sy
     //    Tauri places externalBin binaries alongside the main exe.
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
-            let sidecar_name = format!("pi-sidecar-{}", target_triple());
-            let bundled = exe_dir.join(&sidecar_name);
-            if bundled.exists() {
+            if let Some(bundled) = resolve_bundled_sidecar(exe_dir) {
                 tracing::info!("Using bundled Pi sidecar: {:?}", bundled);
                 return Ok(bundled.to_string_lossy().to_string());
             }
