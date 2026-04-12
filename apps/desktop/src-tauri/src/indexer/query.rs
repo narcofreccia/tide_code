@@ -226,6 +226,100 @@ pub fn search_symbols(
     Ok(results)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::indexer::schema;
+
+    fn setup_db() -> (Connection, i64, i64) {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        schema::create_tables(&conn).unwrap();
+
+        conn.execute("INSERT INTO repos (root_path) VALUES ('/project')", []).unwrap();
+        let repo_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO files (repo_id, rel_path, language, content_hash, line_count, byte_size, indexed_at) VALUES (?1, 'src/main.rs', 'rust', 'hash1', 50, 1024, '2025-01-01')",
+            [repo_id],
+        ).unwrap();
+        let file_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO symbols (file_id, symbol_id, name, qualified_name, kind, start_line, end_line, start_col, end_col, signature) VALUES (?1, 'sym-main', 'main', 'crate::main', 'function', 1, 10, 0, 0, 'fn main()')",
+            [file_id],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO symbols (file_id, symbol_id, name, qualified_name, kind, start_line, end_line, start_col, end_col, signature) VALUES (?1, 'sym-helper', 'helper', 'crate::helper', 'function', 12, 20, 0, 0, 'fn helper() -> bool')",
+            [file_id],
+        ).unwrap();
+
+        (conn, repo_id, file_id)
+    }
+
+    #[test]
+    fn get_file_tree_returns_files() {
+        let (conn, repo_id, _) = setup_db();
+        let files = get_file_tree(&conn, repo_id).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].rel_path, "src/main.rs");
+        assert_eq!(files[0].language, "rust");
+        assert_eq!(files[0].symbol_count, 2);
+    }
+
+    #[test]
+    fn get_file_outline_returns_symbols() {
+        let (conn, repo_id, _) = setup_db();
+        let symbols = get_file_outline(&conn, repo_id, "src/main.rs").unwrap();
+        assert_eq!(symbols.len(), 2);
+        assert_eq!(symbols[0].name, "main");
+        assert_eq!(symbols[1].name, "helper");
+    }
+
+    #[test]
+    fn get_file_outline_empty_for_unknown_path() {
+        let (conn, repo_id, _) = setup_db();
+        let symbols = get_file_outline(&conn, repo_id, "nonexistent.rs").unwrap();
+        assert!(symbols.is_empty());
+    }
+
+    #[test]
+    fn search_symbols_via_fts5() {
+        let (conn, repo_id, _) = setup_db();
+        let results = search_symbols(&conn, repo_id, "main", None, 10).unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].name, "main");
+    }
+
+    #[test]
+    fn search_symbols_with_kind_filter() {
+        let (conn, repo_id, _) = setup_db();
+        let results = search_symbols(&conn, repo_id, "main", Some("function"), 10).unwrap();
+        assert!(!results.is_empty());
+
+        let results = search_symbols(&conn, repo_id, "main", Some("class"), 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn get_repo_outline_aggregates() {
+        let (conn, repo_id, _) = setup_db();
+        let outline = get_repo_outline(&conn, repo_id).unwrap();
+        assert_eq!(outline.root, "/project");
+        assert_eq!(outline.total_files, 1);
+        assert_eq!(outline.total_symbols, 2);
+        assert_eq!(outline.files.len(), 1);
+    }
+
+    #[test]
+    fn get_symbol_not_found() {
+        let (conn, _, _) = setup_db();
+        let result = get_symbol(&conn, "/project", "nonexistent-id").unwrap();
+        assert!(result.is_none());
+    }
+}
+
 pub fn get_repo_outline(conn: &Connection, repo_id: i64) -> rusqlite::Result<RepoOutline> {
     let root: String = conn.query_row(
         "SELECT root_path FROM repos WHERE id = ?1",

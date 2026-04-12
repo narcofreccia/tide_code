@@ -22,9 +22,9 @@ const SERVICES: ProviderConfig[] = [
 /** Known subscription providers that Pi supports via OAuth */
 const SUBSCRIPTION_PROVIDERS: { id: string; name: string; description: string }[] = [
   { id: "openai-codex", name: "OpenAI Codex", description: "ChatGPT Plus/Pro subscription" },
-  { id: "anthropic-max", name: "Anthropic Max", description: "Claude Pro/Max subscription" },
+  { id: "anthropic", name: "Anthropic Max", description: "Claude Pro/Max subscription" },
   { id: "copilot", name: "GitHub Copilot", description: "GitHub Copilot subscription" },
-  { id: "gemini-cli", name: "Google Gemini CLI", description: "Google Gemini subscription" },
+  { id: "google-gemini-cli", name: "Google Gemini CLI", description: "Google Gemini subscription" },
 ];
 
 // Inject spin keyframe once
@@ -253,11 +253,11 @@ export function ProviderSettings() {
               <div style={s.loginStep}>
                 <span style={s.stepNum}>1.</span>
                 <span style={s.loginHint}>Open a terminal and run</span>
-                <code style={s.commandCode}>pi</code>
+                <code style={s.commandCode}>npx pi</code>
                 <button
                   style={s.copyBtn}
                   title="Copy command"
-                  onClick={() => navigator.clipboard.writeText("pi")}
+                  onClick={() => navigator.clipboard.writeText("npx pi")}
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />

@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
     "beforeBuildCommand": "pnpm build",
-    "beforeDevCommand": "lsof -ti:5173 | xargs kill -9 2>/dev/null; pnpm dev"
+    "beforeDevCommand": "pnpm dev"
   },
   "app": {
     "windows": [
@@ -34,7 +34,8 @@
       "binaries/pi-sidecar"
     ],
     "resources": [
-      "resources/pi-extensions/*"
+      "resources/pi-extensions/*",
+      "resources/pi-assets/**/*"
     ],
     "icon": [
       "icons/32x32.png",
@@ -47,6 +48,16 @@
       "signingIdentity": null,
       "entitlements": null,
       "minimumSystemVersion": "12.0"
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.digicert.com",
+      "nsis": {
+        "installMode": "both",
+        "displayLanguageSelector": false
+      },
+      "wix": null
     }
   },
   "plugins": {

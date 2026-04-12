@@ -14,6 +14,12 @@ use tauri::{Emitter, Manager};
 use tokio::sync::{Mutex, Notify};
 use std::sync::Mutex as StdMutex;
 
+/// Cross-platform home directory helper. Uses the `dirs` crate so it works
+/// on macOS (`$HOME`), Windows (`USERPROFILE` / `FOLDERID_Profile`), and Linux.
+fn tide_home_dir() -> std::path::PathBuf {
+    dirs::home_dir().expect("Could not determine home directory")
+}
+
 pub struct AppState {
     pub pi: Arc<Mutex<Option<PiConnection>>>,
     pub workspace_root: Arc<Mutex<Option<String>>>,
@@ -334,8 +340,7 @@ async fn list_sessions(
     // 2. Fall back to ~/.pi/agent/sessions/ and scan all workspace subdirectories
     //    Pi stores sessions in ~/.pi/agent/sessions/{workspace-slug}/ where
     //    the slug is the CWD path with "/" replaced by "-" (e.g. --Users-mac-foo--)
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let sessions_root = std::path::PathBuf::from(&home).join(".pi").join("agent").join("sessions");
+    let sessions_root = tide_home_dir().join(".pi").join("agent").join("sessions");
 
     // Collect directories to scan for .jsonl files
     let dirs_to_scan: Vec<std::path::PathBuf> = if let Some(d) = &session_dir {
@@ -1432,12 +1437,24 @@ async fn fs_delete(path: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn keychain_set_key(provider: String, key: String) -> Result<(), String> {
-    keychain::set_key(&provider, &key)
+    tracing::info!("keychain_set_key called for provider: {} (key length: {})", provider, key.len());
+    let result = keychain::set_key(&provider, &key);
+    match &result {
+        Ok(()) => tracing::info!("keychain_set_key succeeded for {}", provider),
+        Err(e) => tracing::error!("keychain_set_key failed for {}: {}", provider, e),
+    }
+    result
 }
 
 #[tauri::command]
 async fn keychain_get_key(provider: String) -> Result<Option<String>, String> {
-    keychain::get_key(&provider)
+    let result = keychain::get_key(&provider);
+    match &result {
+        Ok(Some(_)) => tracing::info!("keychain_get_key: found key for {}", provider),
+        Ok(None) => tracing::info!("keychain_get_key: no key for {}", provider),
+        Err(e) => tracing::error!("keychain_get_key failed for {}: {}", provider, e),
+    }
+    result
 }
 
 #[tauri::command]
@@ -1701,8 +1718,7 @@ async fn list_skills(
     let mut skills = Vec::new();
 
     // 1. Global skills: ~/.pi/agent/skills/
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let global_dir = std::path::PathBuf::from(&home).join(".pi").join("agent").join("skills");
+    let global_dir = tide_home_dir().join(".pi").join("agent").join("skills");
     discover_skills_in_dir(&global_dir, "global", &mut skills);
 
     // 2. Workspace-local skills: .pi/skills/
@@ -1717,7 +1733,7 @@ async fn list_skills(
     }
 
     // 3. Installed packages: ~/.pi/agent/packages/*/skills/
-    let packages_dir = std::path::PathBuf::from(&home).join(".pi").join("agent").join("packages");
+    let packages_dir = tide_home_dir().join(".pi").join("agent").join("packages");
     if packages_dir.exists() {
         if let Ok(entries) = std::fs::read_dir(&packages_dir) {
             for entry in entries.flatten() {
@@ -1728,6 +1744,12 @@ async fn list_skills(
                 }
             }
         }
+    }
+
+    // 4. Git-installed repos: ~/.pi/agent/git/<host>/<owner>/<repo>/skills/
+    let git_dir = tide_home_dir().join(".pi").join("agent").join("git");
+    if git_dir.exists() {
+        discover_git_skills(&git_dir, &mut skills);
     }
 
     Ok(skills)
@@ -1753,6 +1775,44 @@ fn discover_skills_in_dir(dir: &std::path::Path, source: &str, skills: &mut Vec<
                     if let Some(skill) = parse_skill_file(&skill_md, source) {
                         skills.push(skill);
                     }
+                }
+            }
+        }
+    }
+}
+
+/// Walk ~/.pi/agent/git/ to find cloned repos and discover skills in each repo's skills/ directory.
+/// Structure: git/<host>/<owner>/<repo>/skills/<skill-name>/SKILL.md
+fn discover_git_skills(git_dir: &std::path::Path, skills: &mut Vec<SkillInfo>) {
+    // Walk host -> owner -> repo (3 levels deep)
+    let hosts = match std::fs::read_dir(git_dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for host in hosts.flatten() {
+        if !host.path().is_dir() { continue; }
+        let owners = match std::fs::read_dir(host.path()) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for owner in owners.flatten() {
+            if !owner.path().is_dir() { continue; }
+            let repos = match std::fs::read_dir(owner.path()) {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+            for repo in repos.flatten() {
+                let repo_path = repo.path();
+                if !repo_path.is_dir() { continue; }
+                let repo_name = format!(
+                    "{}/{}/{}",
+                    host.file_name().to_string_lossy(),
+                    owner.file_name().to_string_lossy(),
+                    repo.file_name().to_string_lossy(),
+                );
+                let skills_dir = repo_path.join("skills");
+                if skills_dir.exists() {
+                    discover_skills_in_dir(&skills_dir, &format!("git:{}", repo_name), skills);
                 }
             }
         }
@@ -1872,6 +1932,16 @@ fn resolve_extension_paths() -> Vec<String> {
         "tide-subagent", "tide-experts",
     ];
 
+    // Helper: canonicalize and strip \\?\ UNC prefix on Windows
+    let clean_canonicalize = |p: &std::path::Path| -> Option<String> {
+        p.canonicalize().ok().map(|abs| {
+            let s = abs.to_string_lossy().to_string();
+            #[cfg(windows)]
+            let s = s.strip_prefix(r"\\?\").unwrap_or(&s).to_string();
+            s
+        })
+    };
+
     // 1. Production: bundled pre-transpiled .js extensions in Resources/pi-extensions/
     if let Ok(exe) = std::env::current_exe() {
         if let Some(app_dir) = exe.parent() {
@@ -1880,8 +1950,8 @@ fn resolve_extension_paths() -> Vec<String> {
                 for name in &ext_names {
                     let p = resources.join(format!("{}.js", name));
                     if p.exists() {
-                        if let Ok(abs) = p.canonicalize() {
-                            paths.push(abs.to_string_lossy().to_string());
+                        if let Some(abs) = clean_canonicalize(&p) {
+                            paths.push(abs);
                         }
                     }
                 }
@@ -1905,8 +1975,8 @@ fn resolve_extension_paths() -> Vec<String> {
         for name in &ext_names {
             let p = dir.join(format!("{}.ts", name));
             if p.exists() {
-                if let Ok(abs) = p.canonicalize() {
-                    paths.push(abs.to_string_lossy().to_string());
+                if let Some(abs) = clean_canonicalize(&p) {
+                    paths.push(abs);
                 }
             }
         }
@@ -1925,6 +1995,11 @@ fn resolve_extension_paths() -> Vec<String> {
 #[tauri::command]
 fn get_launch_path() -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
+    tracing::debug!("get_launch_path: raw args = {:?}", args);
+    tracing::debug!(
+        "get_launch_path: TIDE_LAUNCH_DIR = {:?}",
+        std::env::var("TIDE_LAUNCH_DIR").ok()
+    );
     // Skip the binary name (args[0]). Look for the first arg that looks like a path
     // (not a flag starting with -). Tauri may add its own args, so skip those too.
     for arg in args.iter().skip(1) {
@@ -1943,10 +2018,12 @@ fn get_launch_path() -> Option<String> {
                 .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
             base.join(path)
         };
+        tracing::debug!("get_launch_path: candidate = {:?}, is_dir = {}", abs, abs.is_dir());
         if abs.is_dir() {
             return Some(abs.to_string_lossy().to_string());
         }
     }
+    tracing::debug!("get_launch_path: no valid path found");
     None
 }
 
@@ -1956,8 +2033,7 @@ fn get_launch_path() -> Option<String> {
 /// Returns a JSON array of { provider, hasCredentials }.
 #[tauri::command]
 fn oauth_list_providers() -> Result<serde_json::Value, String> {
-    let home = std::env::var("HOME").map_err(|_| "Cannot determine home directory")?;
-    let auth_path = std::path::PathBuf::from(&home).join(".pi/agent/auth.json");
+    let auth_path = tide_home_dir().join(".pi/agent/auth.json");
 
     if !auth_path.exists() {
         // No auth file = no OAuth credentials anywhere
@@ -1969,13 +2045,19 @@ fn oauth_list_providers() -> Result<serde_json::Value, String> {
     let data: serde_json::Value = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse auth.json: {}", e))?;
 
-    // auth.json stores credentials keyed by provider name
-    // Each entry can be { apiKey: "..." } or { oauth: { refresh, access, expires } }
+    // auth.json stores credentials keyed by provider name.
+    // Each entry has "type": "oauth" with refresh/access tokens at top level,
+    // or "type": "api_key" with an apiKey field.
     let mut providers = Vec::new();
     if let Some(obj) = data.as_object() {
         for (key, value) in obj {
-            let has_oauth = value.get("oauth").is_some();
-            let has_api_key = value.get("apiKey").is_some() || value.get("api_key").is_some();
+            let auth_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            let has_oauth = auth_type == "oauth"
+                || value.get("refresh").is_some()
+                || value.get("oauth").is_some();
+            let has_api_key = auth_type == "api_key"
+                || value.get("apiKey").is_some()
+                || value.get("api_key").is_some();
             if has_oauth || has_api_key {
                 providers.push(serde_json::json!({
                     "provider": key,
@@ -1992,8 +2074,7 @@ fn oauth_list_providers() -> Result<serde_json::Value, String> {
 /// Remove OAuth credentials for a provider from Pi's auth.json.
 #[tauri::command]
 fn oauth_logout(provider: String) -> Result<String, String> {
-    let home = std::env::var("HOME").map_err(|_| "Cannot determine home directory")?;
-    let auth_path = std::path::PathBuf::from(&home).join(".pi/agent/auth.json");
+    let auth_path = tide_home_dir().join(".pi/agent/auth.json");
 
     if !auth_path.exists() {
         return Ok("No credentials to remove.".to_string());
@@ -2019,6 +2100,7 @@ fn oauth_logout(provider: String) -> Result<String, String> {
 
 /// Install the `tide` CLI command to /usr/local/bin.
 /// Uses tokio + osascript to prompt for admin privileges on macOS.
+#[cfg(target_os = "macos")]
 #[tauri::command]
 async fn install_cli(app_handle: tauri::AppHandle) -> Result<String, String> {
     let cli_content = r#"#!/bin/bash
@@ -2101,6 +2183,237 @@ fi
             Err("Installation cancelled.".to_string())
         } else {
             Err(format!("Installation failed (exit code {}).", code))
+        }
+    }
+}
+
+/// Install the `tide` CLI command to /usr/local/bin on Linux.
+/// Uses pkexec (Polkit) to prompt for admin privileges if needed.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+async fn install_cli(app_handle: tauri::AppHandle) -> Result<String, String> {
+    // Resolve the path to the running Tide binary so the CLI script can launch it.
+    let exe_path = std::env::current_exe()
+        .map_err(|e| format!("Failed to locate Tide executable: {}", e))?;
+    let exe = exe_path.to_string_lossy();
+
+    let cli_content = format!(
+        r#"#!/bin/bash
+# Tide CLI — open folders in Tide IDE
+# Installed by Tide > Settings > Install CLI
+
+if [ -z "$1" ]; then
+  "{exe}" &
+else
+  # Resolve to absolute path
+  TARGET=$(cd "$1" 2>/dev/null && pwd || echo "$1")
+  # Pass the launch dir so the app can resolve relative paths
+  TIDE_LAUNCH_DIR="$(pwd)" "{exe}" "$TARGET" &
+fi
+"#,
+        exe = exe,
+    );
+
+    let cli_path = "/usr/local/bin/tide";
+
+    // Try writing directly first (works if user owns /usr/local/bin)
+    if std::fs::write(cli_path, &cli_content).is_ok() {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o755);
+        let _ = std::fs::set_permissions(cli_path, perms);
+        let _ = app_handle;
+        return Ok(
+            "CLI installed! You can now use `tide .` or `tide /path/to/project` from any terminal."
+                .to_string(),
+        );
+    }
+
+    // Write the CLI script to a temp file, then use pkexec to copy it
+    // with admin privileges (shows native Polkit password dialog).
+    let tmp_cli = std::env::temp_dir().join("tide-cli-install.tmp");
+    std::fs::write(&tmp_cli, &cli_content)
+        .map_err(|e| format!("Failed to write temp file: {}", e))?;
+
+    let shell_cmd = format!(
+        "mkdir -p /usr/local/bin && cp '{}' /usr/local/bin/tide && chmod +x /usr/local/bin/tide && rm -f '{}'",
+        tmp_cli.display(),
+        tmp_cli.display()
+    );
+
+    let result = tokio::task::spawn_blocking(move || {
+        use std::fs::File;
+        let dev_null_in =
+            File::open("/dev/null").map_err(|e| format!("open /dev/null: {}", e))?;
+        let dev_null_out =
+            File::create("/dev/null").map_err(|e| format!("create /dev/null: {}", e))?;
+        let dev_null_err =
+            File::create("/dev/null").map_err(|e| format!("create /dev/null: {}", e))?;
+
+        std::process::Command::new("pkexec")
+            .args(["bash", "-c", &shell_cmd])
+            .stdin(dev_null_in)
+            .stdout(dev_null_out)
+            .stderr(dev_null_err)
+            .status()
+            .map_err(|e| format!("Failed to launch pkexec: {}", e))
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
+    .map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_cli);
+        e
+    })?;
+
+    let _ = std::fs::remove_file(&tmp_cli);
+
+    if result.success() {
+        Ok(
+            "CLI installed! You can now use `tide .` or `tide /path/to/project` from any terminal."
+                .to_string(),
+        )
+    } else {
+        let code = result.code().unwrap_or(-1);
+        if code == 126 {
+            // pkexec returns 126 when the user dismisses the auth dialog
+            Err("Installation cancelled.".to_string())
+        } else {
+            Err(format!("Installation failed (exit code {}).", code))
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn install_cli() -> Result<String, String> {
+    // Find the directory containing the running Tide executable.
+    let exe_path = std::env::current_exe()
+        .map_err(|e| format!("Failed to locate Tide executable: {}", e))?;
+    let exe_dir = exe_path
+        .parent()
+        .ok_or("Failed to determine executable directory")?;
+    let exe_name = exe_path
+        .file_name()
+        .ok_or("Failed to determine executable name")?
+        .to_string_lossy();
+
+    // Create tide.cmd batch script next to the executable.
+    let cmd_path = exe_dir.join("tide.cmd");
+    let cmd_content = format!(
+        r#"@echo off
+rem Tide CLI — open folders in Tide IDE
+rem Installed by Tide > Settings > Install CLI
+
+set "TIDE_LAUNCH_DIR=%CD%"
+
+if "%~1"=="" (
+    "{exe_dir}\{exe_name}"
+) else (
+    "{exe_dir}\{exe_name}" "%~f1"
+)
+"#,
+        exe_dir = exe_dir.to_string_lossy().replace('/', "\\"),
+        exe_name = exe_name,
+    );
+
+    std::fs::write(&cmd_path, &cmd_content)
+        .map_err(|e| format!("Failed to write tide.cmd: {}", e))?;
+
+    // Add the exe directory to the user's PATH if not already present.
+    let exe_dir_str = exe_dir.to_string_lossy().to_string();
+    let path_updated = add_to_user_path(&exe_dir_str)?;
+
+    if path_updated {
+        // Broadcast WM_SETTINGCHANGE so running shells pick up the new PATH.
+        broadcast_environment_change();
+        Ok(format!(
+            "CLI installed! Added {} to your PATH.\n\
+             Open a new terminal and use `tide .` or `tide C:\\path\\to\\project`.",
+            exe_dir_str
+        ))
+    } else {
+        Ok("CLI installed! You can now use `tide .` or `tide C:\\path\\to\\project` from any terminal.".to_string())
+    }
+}
+
+/// Add `dir` to the user-level PATH (HKCU\\Environment) if not already present.
+#[cfg(target_os = "windows")]
+fn add_to_user_path(dir: &str) -> Result<bool, String> {
+    use winreg::enums::*;
+    use winreg::RegKey;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let env = hkcu
+        .open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)
+        .map_err(|e| format!("Failed to open registry: {}", e))?;
+
+    // Read the current user PATH (may not exist yet).
+    let current_path: String = env.get_value("Path").unwrap_or_default();
+
+    // Check if the directory is already in PATH (case-insensitive).
+    let dir_lower = dir.to_lowercase();
+    let already_present = current_path
+        .split(';')
+        .any(|entry| entry.trim().to_lowercase().trim_end_matches('\\') == dir_lower.trim_end_matches('\\'));
+
+    if already_present {
+        return Ok(false);
+    }
+
+    // Append our directory.
+    let new_path = if current_path.is_empty() {
+        dir.to_string()
+    } else {
+        format!("{};{}", current_path.trim_end_matches(';'), dir)
+    };
+
+    // Write as REG_EXPAND_SZ so %VAR% references in existing entries are preserved.
+    env.set_raw_value(
+        "Path",
+        &winreg::RegValue {
+            vtype: REG_EXPAND_SZ,
+            bytes: {
+                let wide: Vec<u16> = new_path.encode_utf16().chain(std::iter::once(0)).collect();
+                wide.iter().flat_map(|w| w.to_le_bytes()).collect()
+            },
+        },
+    )
+    .map_err(|e| format!("Failed to update PATH: {}", e))?;
+
+    Ok(true)
+}
+
+/// Broadcast WM_SETTINGCHANGE so Explorer and new shells pick up the PATH change.
+#[cfg(target_os = "windows")]
+fn broadcast_environment_change() {
+    use std::ffi::CString;
+    // Use raw Win32 API via windows-sys or manual FFI.
+    #[link(name = "user32")]
+    extern "system" {
+        fn SendMessageTimeoutA(
+            hwnd: isize,
+            msg: u32,
+            wparam: usize,
+            lparam: *const i8,
+            flags: u32,
+            timeout: u32,
+            result: *mut usize,
+        ) -> isize;
+    }
+    const HWND_BROADCAST: isize = 0xFFFF_u16 as isize;
+    const WM_SETTINGCHANGE: u32 = 0x001A;
+    const SMTO_ABORTIFHUNG: u32 = 0x0002;
+    if let Ok(env) = CString::new("Environment") {
+        unsafe {
+            let mut result: usize = 0;
+            SendMessageTimeoutA(
+                HWND_BROADCAST,
+                WM_SETTINGCHANGE,
+                0,
+                env.as_ptr(),
+                SMTO_ABORTIFHUNG,
+                5000,
+                &mut result,
+            );
         }
     }
 }
