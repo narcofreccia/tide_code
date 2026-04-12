@@ -24,3 +24,6 @@ _archive_engine/
 # Legacy sidecar scripts (replaced by build-sidecar.*)
 scripts/prepare-sidecar.*
 apps/desktop/scripts/
+scripts/build-release.sh
+scripts/build-sidecar.sh
+scripts/build-sidecar.ps1
