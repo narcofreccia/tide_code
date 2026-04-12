@@ -63,6 +63,8 @@ struct Plan {
     description: String,
     status: String,
     steps: Vec<PlanStep>,
+    #[serde(default, rename = "initialModel")]
+    initial_model: Option<ModelRef>,
 }
 
 /// Default maximum review→fix cycles.
@@ -303,6 +305,114 @@ impl Orchestrator {
             Some(&plan_id),
             final_plan.steps.len(),
             final_plan.steps.len(),
+            "Orchestration complete!",
+        );
+
+        Ok(())
+    }
+
+    /// Execute a saved plan directly by ID, skipping the planning phase.
+    /// Supports both fresh execution (all steps pending) and resume (some completed).
+    pub async fn run_plan(
+        &self,
+        plan_id: String,
+        pi_handle: PiHandle,
+        app_handle: tauri::AppHandle,
+        agent_end_notify: Arc<Notify>,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<(), String> {
+        // Enable auto-compaction and auto-retry
+        pi_handle.send(&serde_json::json!({ "type": "set_auto_compaction", "enabled": true })).await.ok();
+        pi_handle.send(&serde_json::json!({ "type": "set_auto_retry", "enabled": true })).await.ok();
+
+        let plan = self.load_plan_by_id(&plan_id)?;
+        let total = plan.steps.len();
+        if total == 0 {
+            return Err("Plan has no steps".to_string());
+        }
+
+        // Determine if this is a resume (some steps already completed)
+        let completed_count = plan.steps.iter().filter(|s| s.status == "completed" || s.status == "skipped").count();
+        let pending_count = plan.steps.iter().filter(|s| s.status == "pending").count();
+        let is_resume = completed_count > 0 && pending_count > 0;
+
+        // Use plan description as the user prompt for step context
+        let user_prompt = format!("{}\n\n{}", plan.title, plan.description);
+
+        // Set initial model if the plan specifies one
+        if let Some(ref model) = plan.initial_model {
+            let model_cmd = serde_json::json!({
+                "type": "set_model",
+                "provider": model.provider,
+                "modelId": model.id
+            });
+            pi_handle.send(&model_cmd).await.ok();
+        }
+
+        // ── Phase: Building ─────────────────────────────────
+        Self::check_cancelled(&cancel)?;
+        let build_msg = if is_resume {
+            format!("Resuming plan: {} pending steps ({} already completed)", pending_count, completed_count)
+        } else {
+            format!("Executing plan: {} steps", total)
+        };
+        self.emit_phase(&app_handle, OrcPhase::Building, Some(&plan_id), 0, total, &build_msg);
+
+        self.execute_build_steps(&user_prompt, &plan_id, total, &pi_handle, &app_handle, &agent_end_notify, &cancel).await?;
+
+        // ── Phase: Reviewing (iterative QA loop) ────────────
+        let max_iterations = self.config.max_review_iterations;
+        let mut review_iteration = 0;
+        loop {
+            Self::check_cancelled(&cancel)?;
+            review_iteration += 1;
+            let plan = self.load_plan_by_id(&plan_id)?;
+            let current_total = plan.steps.len();
+
+            self.emit_phase(
+                &app_handle, OrcPhase::Reviewing, Some(&plan_id),
+                current_total, current_total,
+                &format!("Reviewing implementation (pass {}/{})", review_iteration, max_iterations),
+            );
+
+            if self.config.review_mode == "compact" {
+                self.compact(&pi_handle).await;
+            } else {
+                self.new_session(&pi_handle).await?;
+            }
+
+            let review_prompt = self.build_review_prompt(&user_prompt, &plan);
+            self.send_and_wait(&pi_handle, &review_prompt, &agent_end_notify).await?;
+
+            let updated_plan = self.load_plan_by_id(&plan_id)?;
+            let pending_steps: Vec<&PlanStep> = updated_plan.steps.iter()
+                .filter(|s| s.status == "pending")
+                .collect();
+
+            if pending_steps.is_empty() || review_iteration >= max_iterations {
+                break;
+            }
+
+            let fix_total = updated_plan.steps.len();
+            self.emit_phase(
+                &app_handle, OrcPhase::Building, Some(&plan_id),
+                0, fix_total,
+                &format!("Fixing {} issues from review", pending_steps.len()),
+            );
+
+            Self::check_cancelled(&cancel)?;
+            self.new_session(&pi_handle).await?;
+            self.execute_pending_steps(&user_prompt, &plan_id, &pi_handle, &app_handle, &agent_end_notify, &cancel).await?;
+        }
+
+        // ── Phase: Complete ─────────────────────────────────
+        pi_handle.send(&serde_json::json!({ "type": "set_auto_compaction", "enabled": false })).await.ok();
+        pi_handle.send(&serde_json::json!({ "type": "set_auto_retry", "enabled": false })).await.ok();
+
+        let final_plan = self.load_plan_by_id(&plan_id)?;
+        self.emit_phase(
+            &app_handle, OrcPhase::Complete, Some(&plan_id),
+            final_plan.steps.len(), final_plan.steps.len(),
             "Orchestration complete!",
         );
 

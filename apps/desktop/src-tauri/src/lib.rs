@@ -988,6 +988,76 @@ async fn orchestrate(
     Ok(())
 }
 
+/// Execute a saved plan directly by plan ID, skipping the planning phase.
+/// Supports both fresh execution and resume (picks up from pending steps).
+#[tauri::command]
+async fn execute_plan(
+    state: tauri::State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    plan_id: String,
+) -> Result<(), String> {
+    let workspace = {
+        let root = state.workspace_root.lock().await;
+        root.clone().ok_or("No workspace open")?
+    };
+
+    let pi_handle = {
+        let guard = state.pi.lock().await;
+        guard.as_ref().ok_or("Pi not connected")?.handle()
+    };
+
+    let notify = state.agent_end_notify.clone();
+    let cancel_flag = state.orc_cancel.clone();
+    let active_flag = state.orc_active.clone();
+    cancel_flag.store(false, std::sync::atomic::Ordering::Relaxed);
+    active_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    let handle = app_handle.clone();
+
+    tokio::spawn(async move {
+        // Heartbeat
+        let heartbeat_handle = handle.clone();
+        let heartbeat_flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let heartbeat_running = heartbeat_flag.clone();
+        let heartbeat_task = tokio::spawn(async move {
+            while heartbeat_running.load(std::sync::atomic::Ordering::Relaxed) {
+                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                if !heartbeat_running.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                let _ = heartbeat_handle.emit("orchestration_heartbeat", serde_json::json!({
+                    "timestamp": std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0),
+                }));
+            }
+        });
+
+        let orc = orchestrator::Orchestrator::new(workspace);
+        let result = orc.run_plan(plan_id, pi_handle, handle.clone(), notify, cancel_flag).await;
+
+        heartbeat_flag.store(false, std::sync::atomic::Ordering::Relaxed);
+        heartbeat_task.abort();
+        active_flag.store(false, std::sync::atomic::Ordering::Relaxed);
+
+        if let Err(e) = result {
+            tracing::error!("Plan execution failed: {}", e);
+            let _ = handle.emit(
+                "orchestration_event",
+                serde_json::json!({
+                    "phase": "failed",
+                    "planId": serde_json::Value::Null,
+                    "currentStep": 0,
+                    "totalSteps": 0,
+                    "message": e,
+                }),
+            );
+        }
+    });
+
+    Ok(())
+}
+
 /// Cancel a running orchestration pipeline.
 #[tauri::command]
 async fn cancel_orchestration(
@@ -1928,7 +1998,7 @@ fn resolve_extension_paths() -> Vec<String> {
     // Extension base names (without file extension)
     let ext_names = [
         "tide-safety", "tide-project", "tide-session", "tide-router",
-        "tide-planner", "tide-index", "tide-web-search", "tide-auth",
+        "tide-context", "tide-planner", "tide-index", "tide-web-search", "tide-auth",
         "tide-subagent", "tide-experts",
     ];
 
@@ -2545,6 +2615,7 @@ pub fn run() {
             get_pi_state,
             respond_ui_request,
             orchestrate,
+            execute_plan,
             cancel_orchestration,
             confirm_plan_execution,
             open_workspace,

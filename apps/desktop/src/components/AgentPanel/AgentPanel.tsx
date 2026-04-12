@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, Suspense, lazy, useMemo } from "react";
 import { useStreamStore, type ChatMessage, type ToolCallMessage, type SystemMessage, type PiCommand } from "../../stores/stream";
 import { sendPrompt, abortAgent, steerAgent, followUp, newSession, listSessions, switchSession, deleteSession, getPiState, orchestrate, forkSession, getForkMessages, getCommands, type SessionInfo } from "../../lib/ipc";
+import { classifyPrompt } from "../../lib/routerClassifier";
 const LogsTab = lazy(() => import("./LogsTab").then(m => ({ default: m.LogsTab })));
 const PlanTab = lazy(() => import("./PlanTab").then(m => ({ default: m.PlanTab })));
 const SessionHistoryTab = lazy(() => import("./SessionHistoryTab").then(m => ({ default: m.SessionHistoryTab })));
@@ -364,17 +365,6 @@ function SessionDropdown({
 
 // ── Orchestration helpers ────────────────────────────────────
 
-const COMPLEX_KEYWORDS = [
-  "refactor", "architect", "redesign", "implement", "migrate",
-  "rewrite", "overhaul", "restructure", "build out", "from scratch",
-];
-
-function isComplexPrompt(text: string): boolean {
-  const lower = text.toLowerCase();
-  if (lower.length > 800) return true;
-  return COMPLEX_KEYWORDS.some((kw) => lower.includes(kw));
-}
-
 // ── AgentPanel ──────────────────────────────────────────────
 
 export function AgentPanel() {
@@ -527,7 +517,7 @@ export function AgentPanel() {
       addUserMessage(msg);
 
       // Determine if this should use orchestration
-      const shouldOrchestrate = forceOrchestrate || isComplexPrompt(msg);
+      const shouldOrchestrate = forceOrchestrate || classifyPrompt(msg).tier === "complex";
       if (forceOrchestrate) setForceOrchestrate(false); // Reset toggle after use
 
       if (shouldOrchestrate && imagePayloads.length === 0) {
@@ -1137,10 +1127,10 @@ const ChatBubble = React.memo(function ChatBubble({ message, userMessageIndex = 
 
 // ── Tool Call Group (collapsed view) ────────────────────────
 
-function ToolCallGroup({ tools }: { tools: ToolCallMessage[] }) {
+const ToolCallGroup = React.memo(function ToolCallGroup({ tools }: { tools: ToolCallMessage[] }) {
   const [expanded, setExpanded] = useState(false);
-  const running = tools.filter((t) => t.status === "running");
-  const completed = tools.filter((t) => t.status !== "running");
+  const running = useMemo(() => tools.filter((t) => t.status === "running"), [tools]);
+  const completed = useMemo(() => tools.filter((t) => t.status !== "running"), [tools]);
   const hiddenCount = Math.max(0, completed.length - 2);
   const visibleCompleted = expanded ? completed : completed.slice(-2);
 
@@ -1152,7 +1142,7 @@ function ToolCallGroup({ tools }: { tools: ToolCallMessage[] }) {
             style={s.toolGroupBtn}
             onClick={() => setExpanded(!expanded)}
           >
-            {expanded ? `Hide ${hiddenCount} tool calls` : `Show ${hiddenCount} more tool calls`}
+            {expanded ? `Hide ${hiddenCount} tool calls` : `Show ${hiddenCount} more`}
           </button>
         </div>
       )}
@@ -1164,7 +1154,7 @@ function ToolCallGroup({ tools }: { tools: ToolCallMessage[] }) {
       ))}
     </>
   );
-}
+});
 
 // ── Tool Call Card ──────────────────────────────────────────
 
@@ -1174,6 +1164,33 @@ const SUBAGENT_LABELS: Record<string, string> = {
   tide_explore: "Codebase Explorer",
   tide_research: "Web Researcher",
   tide_dispatch: "Parallel Dispatch",
+};
+
+/** Friendly labels and icons for common Pi tools */
+const TOOL_DISPLAY: Record<string, { label: string; icon: string }> = {
+  // File operations
+  read: { label: "Read File", icon: "📄" },
+  write: { label: "Write File", icon: "✏️" },
+  edit: { label: "Edit File", icon: "✏️" },
+  multi_edit: { label: "Multi Edit", icon: "✏️" },
+  // Search & navigation
+  grep: { label: "Search", icon: "🔍" },
+  glob: { label: "Find Files", icon: "📂" },
+  list: { label: "List Directory", icon: "📁" },
+  // Execution
+  bash: { label: "Terminal", icon: "⬛" },
+  run: { label: "Run Command", icon: "⬛" },
+  // Tide extensions
+  tide_index_search: { label: "Symbol Search", icon: "🔎" },
+  tide_index_file_symbols: { label: "File Symbols", icon: "🏷️" },
+  tide_web_search: { label: "Web Search", icon: "🌐" },
+  tide_plan_create: { label: "Create Plan", icon: "📋" },
+  tide_plan_clarify: { label: "Clarify Plan", icon: "❓" },
+  tide_plan_update: { label: "Update Plan", icon: "📋" },
+  tide_explore: { label: "Explore Codebase", icon: "🔭" },
+  tide_research: { label: "Research", icon: "🌐" },
+  tide_dispatch: { label: "Parallel Tasks", icon: "⚡" },
+  tide_experts_brainstorm: { label: "Expert Brainstorm", icon: "🧠" },
 };
 
 function parseSubagentSummary(resultJson?: string): { tokens?: string; successCount?: number; totalCount?: number } | null {
@@ -1200,7 +1217,8 @@ function parseSubagentModel(resultJson?: string): string | null {
 const ToolCallCard = React.memo(function ToolCallCard({ tool }: { tool: ToolCallMessage }) {
   const [expanded, setExpanded] = useState(false);
   const isSubagent = SUBAGENT_TOOLS.has(tool.toolName);
-  const subagentLabel = SUBAGENT_LABELS[tool.toolName];
+  const display = TOOL_DISPLAY[tool.toolName];
+  const displayLabel = display?.label || SUBAGENT_LABELS[tool.toolName] || tool.toolName;
 
   const statusCls =
     tool.status === "running" ? css.toolCardRunning
@@ -1210,35 +1228,73 @@ const ToolCallCard = React.memo(function ToolCallCard({ tool }: { tool: ToolCall
   const summary = isSubagent && tool.status === "completed" ? parseSubagentSummary(tool.resultJson) : null;
   const subagentModel = isSubagent && tool.status === "completed" ? parseSubagentModel(tool.resultJson) : null;
 
+  // Extract a brief context hint from args (e.g., file path for read/edit, query for grep)
+  const contextHint = React.useMemo(() => {
+    if (!tool.argsJson || tool.argsJson === "{}") return null;
+    try {
+      const args = JSON.parse(tool.argsJson);
+      // File operations: show the path
+      if (args.file_path || args.path || args.file) {
+        const p = args.file_path || args.path || args.file;
+        // Show just filename + parent dir
+        const parts = p.split("/");
+        return parts.length > 2 ? `.../${parts.slice(-2).join("/")}` : p;
+      }
+      // Search: show the pattern/query
+      if (args.pattern || args.query || args.command) {
+        const q = args.pattern || args.query || args.command;
+        return q.length > 50 ? q.slice(0, 47) + "..." : q;
+      }
+    } catch { /* ignore */ }
+    return null;
+  }, [tool.argsJson]);
+
+  const durationText = tool.durationMs != null
+    ? (tool.durationMs < 1000 ? `${tool.durationMs}ms` : `${(tool.durationMs / 1000).toFixed(1)}s`)
+    : null;
+
   return (
     <div className={css.messageEnter} style={s.toolRow}>
       <div className={`${css.toolCard} ${statusCls}`}>
         <div className={css.toolCardHeader} onClick={() => setExpanded(!expanded)}>
+          {/* Status indicator */}
           {tool.status === "running" ? (
             <div className={css.toolSpinner} />
           ) : (
-            <span style={{
-              color: tool.status === "error" ? "var(--error)" : "var(--success)",
-              fontSize: 10,
-              lineHeight: 1,
-            }}>
+            <span style={tool.status === "error" ? s.toolIconError : s.toolIconSuccess}>
               {tool.status === "error" ? "\u2717" : "\u2713"}
             </span>
           )}
-          <span style={s.toolName}>{subagentLabel || tool.toolName}</span>
+
+          {/* Tool name with friendly label */}
+          <span style={s.toolName}>{displayLabel}</span>
+
+          {/* Context hint (file path, search query, etc.) */}
+          {contextHint && (
+            <span style={s.toolContext}>{contextHint}</span>
+          )}
+
+          {/* Subagent metadata */}
           {subagentModel && (
             <span style={s.subagentModel}>{subagentModel}</span>
           )}
           {summary && (
             <span style={s.subagentMeta}>
               {summary.successCount}/{summary.totalCount} ok
-              {summary.tokens ? ` \u00b7 ${summary.tokens} tokens` : ""}
+              {summary.tokens ? ` \u00b7 ${summary.tokens} tok` : ""}
             </span>
           )}
-          {tool.durationMs != null && (
-            <span style={s.toolDuration}>{tool.durationMs < 1000 ? `${tool.durationMs}ms` : `${(tool.durationMs / 1000).toFixed(1)}s`}</span>
+
+          {/* Spacer */}
+          <span style={{ flex: 1 }} />
+
+          {/* Duration badge */}
+          {durationText && (
+            <span style={s.toolDuration}>{durationText}</span>
           )}
-          <span style={s.toolChevron}>{expanded ? "\u25BC" : "\u25B6"}</span>
+
+          {/* Expand chevron */}
+          <span style={s.toolChevron}>{expanded ? "\u25BE" : "\u25B8"}</span>
         </div>
 
         {/* Subagent: show live progress while running */}
@@ -1259,22 +1315,20 @@ const ToolCallCard = React.memo(function ToolCallCard({ tool }: { tool: ToolCall
           <div className={css.toolDetails}>
             {tool.argsJson && tool.argsJson !== "{}" && (
               <div style={s.toolDetailBlock}>
-                <span style={s.toolDetailLabel}>Args</span>
+                <span style={s.toolDetailLabel}>Input</span>
                 <pre style={s.toolDetailPre}>{formatJson(tool.argsJson)}</pre>
               </div>
             )}
             {tool.resultJson && (
               <div style={s.toolDetailBlock}>
-                <span style={s.toolDetailLabel}>Result</span>
+                <span style={s.toolDetailLabel}>Output</span>
                 <pre style={s.toolDetailPre}>{isSubagent ? tool.resultJson : formatJson(tool.resultJson)}</pre>
               </div>
             )}
             {tool.error && (
               <div style={s.toolDetailBlock}>
-                <span style={{ ...s.toolDetailLabel, color: "var(--error)" }}>Error</span>
-                <span style={{ color: "var(--error)", fontSize: "var(--font-size-xs)" }}>
-                  {tool.error}
-                </span>
+                <span style={s.toolDetailLabelError}>Error</span>
+                <span style={s.toolErrorText}>{tool.error}</span>
               </div>
             )}
           </div>
@@ -1417,11 +1471,11 @@ function ImageIcon() {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const s: Record<string, any> = {
   container: { display: "flex", flexDirection: "column", height: "100%", background: "var(--bg-secondary)", position: "relative" as const },
-  tabBar: { display: "flex", alignItems: "center", height: 34, padding: "0 4px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", gap: 0 },
-  tab: { padding: "0 14px", height: "100%", fontSize: "var(--font-size-sm)", fontFamily: "var(--font-ui)", fontWeight: 500, color: "var(--text-secondary)", background: "transparent", border: "none", borderBottomWidth: 2, borderBottomStyle: "solid", borderBottomColor: "transparent", cursor: "pointer", transition: "color 0.15s" },
+  tabBar: { display: "flex", alignItems: "center", height: 36, padding: "0 6px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", gap: 0, overflow: "visible" },
+  tab: { padding: "0 12px", height: "100%", fontSize: "var(--font-size-sm)", fontFamily: "var(--font-ui)", fontWeight: 500, color: "var(--text-secondary)", background: "transparent", border: "none", borderBottomWidth: 2, borderBottomStyle: "solid", borderBottomColor: "transparent", cursor: "pointer", transition: "color 0.15s", whiteSpace: "nowrap" as const },
   tabActive: { color: "var(--text-bright)", borderBottomColor: "var(--accent)" },
-  sessionControls: { display: "flex", alignItems: "center", gap: 2, marginRight: 4 },
-  sessionBtn: { display: "flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, background: "transparent", border: "none", borderRadius: "var(--radius-sm)", color: "var(--text-secondary)", cursor: "pointer" },
+  sessionControls: { display: "flex", alignItems: "center", gap: 4, marginRight: 2, flexShrink: 0 },
+  sessionBtn: { display: "flex", alignItems: "center", justifyContent: "center", width: 26, height: 26, background: "transparent", border: "none", borderRadius: "var(--radius-sm)", color: "var(--text-secondary)", cursor: "pointer", transition: "color 0.15s, background 0.15s", flexShrink: 0 },
   messageList: { display: "flex", flexDirection: "column", gap: 2, padding: "12px 14px 16px" },
   userRow: { display: "flex", flexDirection: "column", gap: 4, marginTop: 8 },
   roleLabel: { display: "flex", alignItems: "center", gap: 6, fontSize: "var(--font-size-xs)", fontWeight: 600, fontFamily: "var(--font-ui)", color: "var(--text-secondary)", textTransform: "uppercase" as const, letterSpacing: "0.4px" },
@@ -1456,29 +1510,34 @@ const s: Record<string, any> = {
   commandDesc: { fontSize: "var(--font-size-xs)", color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const },
   commandEmpty: { padding: "8px 12px", fontSize: "var(--font-size-xs)", color: "var(--text-secondary)", textAlign: "center" as const },
   streamingDot: { display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", animation: "pulse 1s ease-in-out infinite" },
-  toolRow: { margin: "4px 0" },
+  toolRow: { margin: "2px 0" },
   toolGroupToggle: { display: "flex", justifyContent: "center", margin: "2px 0" },
   toolGroupBtn: {
     background: "none",
     border: "1px solid var(--border)",
-    borderRadius: "var(--radius-sm)",
+    borderRadius: 12,
     color: "var(--text-secondary)",
-    fontSize: "var(--font-size-xs)",
+    fontSize: 10,
     fontFamily: "var(--font-ui)",
-    padding: "2px 10px",
+    padding: "2px 12px",
     cursor: "pointer",
     opacity: 0.7,
-    transition: "opacity 0.15s",
+    transition: "opacity 0.15s, background 0.15s",
   },
-  toolName: { fontFamily: "var(--font-mono)", fontSize: "var(--font-size-xs)", color: "var(--text-bright)", flex: 1 },
-  toolDuration: { fontFamily: "var(--font-mono)", fontSize: "var(--font-size-xs)", color: "var(--text-secondary)" },
-  toolChevron: { fontSize: 8, color: "var(--text-secondary)", marginLeft: 2 },
-  subagentProgress: { padding: "4px 10px 6px", fontSize: "var(--font-size-xs)", fontFamily: "var(--font-mono)", color: "var(--text-secondary)", borderTop: "1px solid var(--border)", lineHeight: 1.4 },
-  subagentMeta: { fontFamily: "var(--font-mono)", fontSize: "var(--font-size-xs)", color: "var(--accent)", marginLeft: 4, opacity: 0.85 },
-  subagentModel: { fontFamily: "var(--font-mono)", fontSize: "var(--font-size-xs)", color: "var(--text-secondary)", marginLeft: 4, opacity: 0.7 },
-  toolDetailBlock: { display: "flex", flexDirection: "column", gap: 2, marginTop: 6 },
-  toolDetailLabel: { fontSize: "var(--font-size-xs)", fontFamily: "var(--font-ui)", fontWeight: 600, color: "var(--text-secondary)", textTransform: "uppercase" as const, letterSpacing: "0.3px" },
-  toolDetailPre: { fontFamily: "var(--font-mono)", fontSize: "var(--font-size-xs)", lineHeight: 1.4, color: "var(--text-primary)", background: "var(--bg-primary)", padding: 8, borderRadius: "var(--radius-sm)", margin: 0, overflowX: "auto" as const, maxHeight: 120, whiteSpace: "pre-wrap" as const, wordBreak: "break-word" as const },
+  toolIconSuccess: { color: "var(--success)", fontSize: 11, lineHeight: 1, flexShrink: 0 },
+  toolIconError: { color: "var(--error)", fontSize: 11, lineHeight: 1, flexShrink: 0 },
+  toolName: { fontFamily: "var(--font-ui)", fontSize: "var(--font-size-xs)", fontWeight: 500, color: "var(--text-bright)", whiteSpace: "nowrap" as const },
+  toolContext: { fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-secondary)", opacity: 0.8, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const, maxWidth: 200 },
+  toolDuration: { fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-secondary)", opacity: 0.6, flexShrink: 0 },
+  toolChevron: { fontSize: 9, color: "var(--text-secondary)", opacity: 0.5, flexShrink: 0 },
+  subagentProgress: { padding: "4px 10px 6px 28px", fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--text-secondary)", borderTop: "1px solid var(--border)", lineHeight: 1.5, maxHeight: 60, overflow: "hidden" },
+  subagentMeta: { fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--accent)", opacity: 0.85, flexShrink: 0 },
+  subagentModel: { fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-secondary)", opacity: 0.7, flexShrink: 0 },
+  toolDetailBlock: { display: "flex", flexDirection: "column", gap: 3, marginTop: 6 },
+  toolDetailLabel: { fontSize: 10, fontFamily: "var(--font-ui)", fontWeight: 600, color: "var(--text-secondary)", textTransform: "uppercase" as const, letterSpacing: "0.5px" },
+  toolDetailLabelError: { fontSize: 10, fontFamily: "var(--font-ui)", fontWeight: 600, color: "var(--error)", textTransform: "uppercase" as const, letterSpacing: "0.5px" },
+  toolErrorText: { color: "var(--error)", fontSize: "var(--font-size-xs)", fontFamily: "var(--font-mono)", lineHeight: 1.4 },
+  toolDetailPre: { fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1.45, color: "var(--text-primary)", background: "var(--bg-primary)", padding: "6px 8px", borderRadius: "var(--radius-sm)", margin: 0, overflowX: "auto" as const, maxHeight: 160, whiteSpace: "pre-wrap" as const, wordBreak: "break-word" as const, border: "1px solid var(--border)" },
   thinkingRow: { marginTop: 8 },
   thinkingBubble: { display: "flex", alignItems: "center", gap: 8, padding: "8px 12px" },
   thinkingDot: { color: "var(--text-secondary)", fontSize: 16, lineHeight: 1, marginRight: 2 },

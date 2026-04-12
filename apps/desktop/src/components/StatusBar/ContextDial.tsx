@@ -14,15 +14,15 @@ const COLORS: Record<string, string> = {
 };
 
 export function ContextDial() {
-  const { breakdown, refreshBreakdown, openInspector } = useContextStore();
+  const { breakdown, refreshFromSnapshot, openInspector } = useContextStore();
   const { indexed, indexing, fileCount, symbolCount } = useIndexStore();
   const [showTooltip, setShowTooltip] = useState(false);
   const dialRef = useRef<HTMLDivElement>(null);
 
   // Fetch breakdown once on mount — updates come via agent_end events
   useEffect(() => {
-    refreshBreakdown();
-  }, [refreshBreakdown]);
+    refreshFromSnapshot();
+  }, [refreshFromSnapshot]);
 
   const usagePercent = breakdown?.usagePercent ?? 0;
   const color = COLORS[breakdown?.thresholdColor ?? "green"];

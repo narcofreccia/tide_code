@@ -235,7 +235,7 @@ pub async fn resume_experts_session(
     state: tauri::State<'_, super::AppState>,
     app_handle: tauri::AppHandle,
     session_id: String,
-) -> Result<(), String> {
+) -> Result<serde_json::Value, String> {
     let workspace = {
         let root = state.workspace_root.lock().await;
         root.clone().ok_or("No workspace open")?
@@ -292,7 +292,7 @@ pub async fn resume_experts_session(
     pi_handle.send(&cmd).await.map_err(|e| format!("Failed to send resume prompt: {}", e))?;
 
     tracing::info!("Expert session resumed: id={}, team={}", session_id, team_id);
-    Ok(())
+    Ok(session_state)
 }
 
 /// Send a message from the user into the active expert session.
@@ -303,22 +303,34 @@ pub async fn send_expert_message(
     content: String,
     to: Option<String>,
     msg_id: Option<String>,
+    session_id: Option<String>,
 ) -> Result<(), String> {
     let sessions_root = {
         let guard = state.experts_session_dir.lock().await;
         guard.clone().ok_or("No active expert session")?
     };
 
-    // Find the latest session directory (the extension creates its own session ID)
     let sessions_path = PathBuf::from(&sessions_root);
-    let latest_session = std::fs::read_dir(&sessions_path)
-        .map_err(|e| e.to_string())?
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH))
-        .ok_or("No session directories found")?;
 
-    let mailboxes_dir = latest_session.path().join("mailboxes");
+    // Use explicit session_id if provided, otherwise fall back to latest by mtime
+    let session_dir = if let Some(ref sid) = session_id {
+        let dir = sessions_path.join(sid);
+        if dir.is_dir() {
+            dir
+        } else {
+            return Err(format!("Session directory not found: {}", sid));
+        }
+    } else {
+        let latest = std::fs::read_dir(&sessions_path)
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .max_by_key(|e| e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH))
+            .ok_or("No session directories found")?;
+        latest.path()
+    };
+
+    let mailboxes_dir = session_dir.join("mailboxes");
     if !mailboxes_dir.exists() {
         return Err("Session mailboxes directory not found".to_string());
     }

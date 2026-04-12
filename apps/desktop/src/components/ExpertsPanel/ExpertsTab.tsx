@@ -396,7 +396,8 @@ export function ExpertsTab() {
     }));
 
     try {
-      await sendExpertMessage(text, sendTarget ?? undefined, userMsg.id);
+      const sessionId = useExpertsStore.getState().activeSessionId ?? undefined;
+      await sendExpertMessage(text, sendTarget ?? undefined, userMsg.id, sessionId);
     } catch (err) {
       console.error("[experts] Failed to send message:", err);
     }
@@ -421,10 +422,13 @@ export function ExpertsTab() {
     if (!activeSession) return;
     setResuming(true);
     try {
-      await resumeExpertsSession(activeSession.id);
+      const sessionState = await resumeExpertsSession(activeSession.id);
+      const resumedPhase = (sessionState.phase || "exploration") as ExpertsPhase;
       useExpertsStore.setState({
         isActive: true,
-        phase: "exploration" as const,
+        phase: resumedPhase,
+        activeSession: sessionState,
+        activeSessionId: sessionState.id,
         startedAt: Date.now(),
         timeLimitMinutes: selectedTeam?.timeLimitMinutes ?? 10,
       });
@@ -438,15 +442,23 @@ export function ExpertsTab() {
   const [executing, setExecuting] = useState(false);
 
   const handleExecuteViaOrchestrator = useCallback(async () => {
-    if (!synthesisMsg?.content) return;
+    if (!synthesisMsg?.content || !activeSession?.id) return;
     setExecuting(true);
     try {
-      // Clear the chatbox for a fresh start
-      useExpertsStore.getState(); // ensure store is hydrated
-      const { clearMessages } = await import("../../stores/stream").then(m => m.useStreamStore.getState());
+      const streamStore = await import("../../stores/stream").then(m => m.useStreamStore);
+      const { clearMessages } = streamStore.getState();
       clearMessages();
 
-      // Use the orchestrator's existing pipeline with expert synthesis as context.
+      // Add a system message indicating this is an expert-backed orchestration
+      streamStore.setState((state) => ({
+        messages: [...state.messages, {
+          role: "system" as const,
+          id: `sys-expert-exec-${Date.now()}`,
+          content: `Starting expert-backed orchestration from session "${activeSession.id}" — topic: ${topic}`,
+          timestamp: Date.now(),
+        }],
+      }));
+
       // The orchestrator will: Plan (using expert synthesis as pre-research) →
       // Wait for user confirmation → Execute steps → Review
       const prompt =
@@ -456,11 +468,10 @@ export function ExpertsTab() {
         `Use their findings and action items to create and execute the plan. ` +
         `Do NOT re-explore the codebase — the expert analysis below is your research.`;
 
-      // Switch to Chat tab to show orchestration progress
       window.dispatchEvent(new CustomEvent("tide:switch-tab", { detail: "chat" }));
 
-      // Start orchestration — expert_context feeds the synthesis into the planning prompt
-      await orchestrate(prompt, activeSession?.id);
+      // expert_context feeds the synthesis into the planning prompt via the session ID
+      await orchestrate(prompt, activeSession.id);
     } catch (err) {
       console.error("[experts] Failed to start orchestration:", err);
     } finally {

@@ -1,6 +1,5 @@
 import React, { useState } from "react";
 import { useExpertsStore } from "../../stores/expertsStore";
-import { orchestrate } from "../../lib/ipc";
 
 // ── Helpers ────────────────────────────────────────────────
 
@@ -12,7 +11,7 @@ function formatTokens(n: number): string {
 
 // ── Component ──────────────────────────────────────────────
 
-export function SynthesisView() {
+export function SynthesisView({ onExecute }: { onExecute?: () => Promise<void> }) {
   const activeSession = useExpertsStore((s) => s.activeSession);
   const timeLimitReached = useExpertsStore((s) => s.timeLimitReached);
   const phase = useExpertsStore((s) => s.phase);
@@ -30,12 +29,13 @@ export function SynthesisView() {
     );
   }
 
-  const { synthesis, usage, topic, id } = activeSession;
+  const { synthesis, usage } = activeSession;
 
   const handleExecute = async () => {
+    if (!onExecute) return;
     setExecuting(true);
     try {
-      await orchestrate(topic, id);
+      await onExecute();
     } catch (err) {
       console.error("[experts] Failed to execute via orchestrator:", err);
     } finally {
@@ -46,7 +46,7 @@ export function SynthesisView() {
   const handleRerun = () => {
     // Re-running would require calling the backend start again.
     // For now this is a placeholder — the parent ExpertsTab handles start.
-    console.log("[experts] Re-run requested for session:", id);
+    console.log("[experts] Re-run requested for session:", activeSession.id);
   };
 
   return (

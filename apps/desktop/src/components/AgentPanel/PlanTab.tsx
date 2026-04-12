@@ -4,7 +4,7 @@ import { useStreamStore, type AvailableModel } from "../../stores/stream";
 import { useWorkspaceStore } from "../../stores/workspace";
 import { useOrchestrationStore } from "../../stores/orchestrationStore";
 import { openFileByPath } from "../../lib/fileHelpers";
-import { orchestrate, newSession } from "../../lib/ipc";
+import { executePlan, newSession } from "../../lib/ipc";
 
 // ── Status Icons ────────────────────────────────────────────
 
@@ -280,21 +280,13 @@ function PlanActions({ plan }: { plan: Plan }) {
       await newSession();
       useStreamStore.getState().clearMessages();
       window.dispatchEvent(new CustomEvent("tide:switch-tab", { detail: "chat" }));
-
-      const stepList = plan.steps.map((st, i) => `${i + 1}. ${st.title}`).join("\n");
-      const prompt =
-        `Execute this implementation plan:\n\n` +
-        `## ${plan.title}\n\n${plan.description}\n\n` +
-        `## Steps\n\n${stepList}\n\n` +
-        `Execute all steps in order. Use the plan tools to update step status as you go.`;
-
-      await orchestrate(prompt);
+      await executePlan(plan.id);
     } catch (err) {
       console.error("[plan] Execute failed:", err);
     } finally {
       setLoading(false);
     }
-  }, [plan]);
+  }, [plan.id]);
 
   const handleResume = useCallback(async () => {
     setLoading(true);
@@ -302,28 +294,13 @@ function PlanActions({ plan }: { plan: Plan }) {
       await newSession();
       useStreamStore.getState().clearMessages();
       window.dispatchEvent(new CustomEvent("tide:switch-tab", { detail: "chat" }));
-
-      const completedSummary = completedSteps
-        .map(st => `- ✓ ${st.title}${st.summary ? `: ${st.summary}` : ""}`)
-        .join("\n");
-      const pendingSummary = pendingSteps
-        .map((st, i) => `${i + 1}. ${st.title}: ${st.description}`)
-        .join("\n");
-
-      const prompt =
-        `Resume this implementation plan from where it was interrupted:\n\n` +
-        `## ${plan.title}\n\n${plan.description}\n\n` +
-        `## Completed Steps\n\n${completedSummary}\n\n` +
-        `## Remaining Steps (execute these)\n\n${pendingSummary}\n\n` +
-        `Continue executing the remaining steps. Read the completed step summaries for context.`;
-
-      await orchestrate(prompt);
+      await executePlan(plan.id);
     } catch (err) {
       console.error("[plan] Resume failed:", err);
     } finally {
       setLoading(false);
     }
-  }, [plan, completedSteps, pendingSteps]);
+  }, [plan.id]);
 
   if (isFullyDone || isOrcActive) return null;
 

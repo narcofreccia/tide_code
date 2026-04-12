@@ -23,6 +23,12 @@ export async function orchestrate(prompt: string, expertSessionId?: string): Pro
   await invoke("orchestrate", { prompt, expertSessionId: expertSessionId ?? null });
 }
 
+/** Execute a saved plan directly by plan ID, skipping the planning phase.
+ *  Supports both fresh execution and resume (picks up from pending steps). */
+export async function executePlan(planId: string): Promise<void> {
+  await invoke("execute_plan", { planId });
+}
+
 /** Cancel a running orchestration pipeline. */
 export async function cancelOrchestration(): Promise<void> {
   await invoke("cancel_orchestration");
@@ -756,9 +762,9 @@ export async function deleteExpertsSession(sessionId: string): Promise<void> {
 export async function startExpertsSession(teamId: string, topic: string): Promise<string> {
   return invoke("start_experts_session", { teamId, topic });
 }
-export async function resumeExpertsSession(sessionId: string): Promise<void> {
-  await invoke("resume_experts_session", { sessionId });
+export async function resumeExpertsSession(sessionId: string): Promise<ExpertsSessionState> {
+  return invoke<ExpertsSessionState>("resume_experts_session", { sessionId });
 }
-export async function sendExpertMessage(content: string, to?: string, msgId?: string): Promise<void> {
-  await invoke("send_expert_message", { content, to: to ?? null, msgId: msgId ?? null });
+export async function sendExpertMessage(content: string, to?: string, msgId?: string, sessionId?: string): Promise<void> {
+  await invoke("send_expert_message", { content, to: to ?? null, msgId: msgId ?? null, sessionId: sessionId ?? null });
 }

@@ -54,6 +54,9 @@ export interface ClarifyQuestion {
 
 export type UiRequest = ConfirmRequest | SelectRequest | InputRequest | EditorRequest;
 
+/** Status key used by the tide_plan_clarify extension to signal clarify mode. */
+export const CLARIFY_STATUS_KEY = "clarify";
+
 // ── Store ──────────────────────────────────────────────────
 
 interface ApprovalState {
@@ -237,9 +240,10 @@ export function initApprovalListener(): void {
       }
 
       case "input": {
-        // If we're in clarify mode, capture the input request ID instead of showing a modal
+        // If clarify questions are active, capture the next input request as the clarify response channel.
+        // This replaces brittle title-matching ("Plan Clarification") with state-aware routing.
         const currentClarify = useApprovalStore.getState().clarifyQuestions;
-        if (currentClarify && (event.title === "Plan Clarification" || payload.title === "Plan Clarification")) {
+        if (currentClarify) {
           useApprovalStore.setState({ clarifyInputRequestId: event.id });
           break;
         }
@@ -293,8 +297,8 @@ export function initApprovalListener(): void {
         const statusText = payload.statusText ?? payload.status ?? payload.text ?? "";
         store.setPiStatus(statusId, statusText);
 
-        // Handle clarify status updates
-        if (statusId === "clarify") {
+        // Handle clarify status updates from tide_plan_clarify extension
+        if (statusId === CLARIFY_STATUS_KEY) {
           if (statusText) {
             try {
               const data = JSON.parse(statusText);

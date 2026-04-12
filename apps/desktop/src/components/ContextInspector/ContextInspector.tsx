@@ -11,7 +11,7 @@ type TabId = "overview" | "messages" | "tags";
 type FilterType = "all" | "pinned" | "unpinned";
 
 export function ContextInspector() {
-  const { inspectorOpen, closeInspector, breakdown, refreshCategories } = useContextStore();
+  const { inspectorOpen, closeInspector, breakdown, refreshFromSnapshot } = useContextStore();
   const { tags, loadAllTags, togglePin, deleteTag } = useRegionTagStore();
   const isCompacting = useStreamStore((s) => s.isCompacting);
   const [activeTab, setActiveTab] = useState<TabId>("overview");
@@ -22,11 +22,11 @@ export function ContextInspector() {
   useEffect(() => {
     if (inspectorOpen) {
       loadAllTags();
-      refreshCategories();
+      refreshFromSnapshot();
     } else {
       setConfirmingNewSession(false);
     }
-  }, [inspectorOpen, loadAllTags, refreshCategories]);
+  }, [inspectorOpen, loadAllTags, refreshFromSnapshot]);
 
   const allTags = useMemo(() => Array.from(tags.values()), [tags]);
 

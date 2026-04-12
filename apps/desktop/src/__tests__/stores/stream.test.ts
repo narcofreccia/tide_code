@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 // Mock the dependent stores and ipc before importing stream
 vi.mock("../../stores/contextStore", () => ({
   useContextStore: {
-    getState: () => ({ setContext: vi.fn(), updateFromPiState: vi.fn() }),
+    getState: () => ({ setContext: vi.fn(), refreshFromSnapshot: vi.fn(), updateBudget: vi.fn() }),
     setState: vi.fn(),
   },
 }));

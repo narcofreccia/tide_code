@@ -30,7 +30,4 @@ scripts/build-sidecar.ps1
 
 apps/desktop/src-tauri/resources/pi-extensions/*.js
 apps/desktop/src-tauri/resources/pi-sidecar/
-
-
-apps/desktop/src-tauri/resources/pi-extensions/*.js
-apps/desktop/src-tauri/resources/pi-sidecar/
+agents_improved_tasks.json

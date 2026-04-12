@@ -216,7 +216,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
 
   clearMessages: () => {
     set({ messages: [], hasAutoTitled: false });
-    useContextStore.getState().updateFromPiState(0, get().contextWindow);
+    useContextStore.getState().refreshFromSnapshot();
   },
 
   handlePiEvent: (event: PiEvent) => {
@@ -327,22 +327,10 @@ export const useStreamStore = create<StreamState>((set, get) => ({
           _emptyRetryCount: 0,
         });
 
-        // Refresh model info + session stats + category breakdown after agent completes
+        // Refresh model info + session stats + context snapshot after agent completes
         getPiState().catch(() => {});
         getSessionStats().catch(() => {});
-        useContextStore.getState().refreshCategories();
-
-        // Update context from the last assistant message's usage.input (fallback for message_end)
-        const agentMessages = (event as any).messages;
-        if (Array.isArray(agentMessages)) {
-          for (let i = agentMessages.length - 1; i >= 0; i--) {
-            if (agentMessages[i]?.role === "assistant" && agentMessages[i]?.usage?.input != null) {
-              const ctxWindow = get().contextWindow;
-              useContextStore.getState().updateFromPiState(agentMessages[i].usage.input, ctxWindow);
-              break;
-            }
-          }
-        }
+        useContextStore.getState().refreshFromSnapshot();
 
         // Auto-compact if enabled and usage exceeds threshold
         {
@@ -600,12 +588,10 @@ export const useStreamStore = create<StreamState>((set, get) => ({
 
             set(updates);
 
-            // Sync context window size — preserve existing usage, only update budget
+            // Sync context window size and refresh snapshot data
             if (updates.contextWindow) {
-              const existing = useContextStore.getState().breakdown;
-              if (existing && existing.totalTokens > 0) {
-                useContextStore.getState().updateFromPiState(existing.totalTokens, updates.contextWindow);
-              }
+              useContextStore.getState().updateBudget(updates.contextWindow);
+              useContextStore.getState().refreshFromSnapshot();
             }
             break;
           }
@@ -624,12 +610,10 @@ export const useStreamStore = create<StreamState>((set, get) => ({
                 updates.contextWindow = Number(m.contextWindow);
               }
               set(updates);
-              // If contextWindow changed, update budget but preserve existing usage
+              // If contextWindow changed, update budget and refresh snapshot
               if (updates.contextWindow) {
-                const existing = useContextStore.getState().breakdown;
-                if (existing && existing.totalTokens > 0) {
-                  useContextStore.getState().updateFromPiState(existing.totalTokens, updates.contextWindow);
-                }
+                useContextStore.getState().updateBudget(updates.contextWindow);
+                useContextStore.getState().refreshFromSnapshot();
               }
               // Insert system message in chat when model changes
               if (prevModel && prevModel !== name) {
@@ -716,7 +700,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
                 });
                 // Reset context indicator for new session
                 useContextStore.setState({ warningDismissedAt: 0 });
-                useContextStore.getState().updateFromPiState(0, get().contextWindow);
+                useContextStore.getState().refreshFromSnapshot();
                 getSessionStats().catch(() => {});
               }
             }
@@ -736,14 +720,13 @@ export const useStreamStore = create<StreamState>((set, get) => ({
                 hasAutoTitled: false,
                 sessionStatus: "loading",
               });
-              // Context will update when get_messages response arrives with usage.input
-              // Re-fetch messages, stats, and category breakdown for the switched session
+              // Re-fetch messages, stats, and context snapshot for the switched session
               getMessages().catch(() => {});
               getSessionStats().catch(() => {});
-              // Refresh Pi state after a brief delay to get authoritative context usage
+              // Refresh context from snapshot after a brief delay for the extension to update
               setTimeout(() => {
                 getPiState().catch(() => {});
-                useContextStore.getState().refreshCategories();
+                useContextStore.getState().refreshFromSnapshot();
               }, 300);
               // Reset warning state for new session
               useContextStore.setState({ warningDismissedAt: 0 });
@@ -830,14 +813,8 @@ export const useStreamStore = create<StreamState>((set, get) => ({
                   set({ sessionStatus: "active", _pendingForkRestore: false });
                 }
 
-                // Restore context usage from last assistant message's usage.input
-                for (let i = rawMessages.length - 1; i >= 0; i--) {
-                  if (rawMessages[i].role === "assistant" && rawMessages[i].usage?.input != null) {
-                    const ctxWindow = get().contextWindow;
-                    useContextStore.getState().updateFromPiState(rawMessages[i].usage.input, ctxWindow);
-                    break;
-                  }
-                }
+                // Refresh context from snapshot after messages are restored
+                useContextStore.getState().refreshFromSnapshot();
               }
             }
             break;
@@ -854,8 +831,9 @@ export const useStreamStore = create<StreamState>((set, get) => ({
               const ctxState = useContextStore.getState();
               const pre = ctxState.preCompactTokens;
               if (pre && pre > 0) {
-                // Wait for stats to update, then compute savings + add chat message
-                setTimeout(() => {
+                // Wait for snapshot to update after compaction, then compute savings
+                setTimeout(async () => {
+                  await useContextStore.getState().refreshFromSnapshot();
                   const post = useContextStore.getState().breakdown?.totalTokens ?? 0;
                   ctxState.setPostCompactTokens(post);
                   if (post < pre) {
@@ -1066,14 +1044,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
           }
         }
 
-        // Update context usage from message_end usage data (handle different provider field names)
-        if (endMsg?.usage) {
-          const inputTokens = endMsg.usage.input ?? endMsg.usage.prompt_tokens ?? endMsg.usage.inputTokens;
-          if (inputTokens != null && inputTokens > 0) {
-            const ctxWindow = get().contextWindow;
-            useContextStore.getState().updateFromPiState(inputTokens, ctxWindow);
-          }
-        }
+        // Context usage will be refreshed from snapshot at agent_end
         break;
       }
 
@@ -1095,6 +1066,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       case "auto_compaction_end": {
         set({ isCompacting: false });
         console.log("[Tide] Context compaction completed");
+        useContextStore.getState().refreshFromSnapshot();
         break;
       }
 
@@ -1155,12 +1127,10 @@ export const useStreamStore = create<StreamState>((set, get) => ({
               ],
             }));
           }
-          // Update context window size — preserve existing usage
+          // Update context budget from new context window size and refresh snapshot
           if (updates.contextWindow) {
-            const existing = useContextStore.getState().breakdown;
-            if (existing && existing.totalTokens > 0) {
-              useContextStore.getState().updateFromPiState(existing.totalTokens, updates.contextWindow);
-            }
+            useContextStore.getState().updateBudget(updates.contextWindow);
+            useContextStore.getState().refreshFromSnapshot();
           }
           // Fix 3: Proactively refresh full state to ensure contextWindow is synced
           getPiState().catch(() => {});

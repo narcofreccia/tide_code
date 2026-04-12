@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { getPiState, getContextBreakdown, getContextExclusions, excludeContextMessage, includeContextMessage } from "../lib/ipc";
+import { getContextBreakdown, getContextExclusions, excludeContextMessage, includeContextMessage } from "../lib/ipc";
 
 export type ThresholdColor = "green" | "yellow" | "red";
 
@@ -53,9 +53,8 @@ interface ContextState {
   autoCompactEnabled: boolean;
   autoCompactThreshold: number;
 
-  refreshBreakdown: () => Promise<void>;
-  updateFromPiState: (totalTokens: number, budgetTokens: number) => void;
-  refreshCategories: () => Promise<void>;
+  refreshFromSnapshot: () => Promise<void>;
+  updateBudget: (budgetTokens: number) => void;
   refreshItems: () => Promise<void>;
   togglePin: (id: string) => Promise<void>;
   openInspector: () => void;
@@ -79,17 +78,40 @@ export const useContextStore = create<ContextState>((set, get) => ({
   autoCompactEnabled: localStorage.getItem("tide:autoCompact") === "true",
   autoCompactThreshold: parseFloat(localStorage.getItem("tide:autoCompactThreshold") || "0.80"),
 
-  refreshBreakdown: async () => {
+  refreshFromSnapshot: async () => {
     try {
-      await getPiState();
+      const snapshot = await getContextBreakdown();
+      const totalTokens = snapshot?.totalTokens ?? 0;
+      const categories = snapshot?.categories ?? [];
+      const existing = get().breakdown;
+      // Use existing budgetTokens, or fall back to stream store's contextWindow
+      let budgetTokens = existing?.budgetTokens ?? 0;
+      if (budgetTokens === 0) {
+        try {
+          // Lazy import to avoid circular dependency
+          const { useStreamStore } = await import("./stream");
+          budgetTokens = useStreamStore.getState().contextWindow || 0;
+        } catch { /* ignore */ }
+      }
+      const usagePercent = budgetTokens > 0 ? totalTokens / budgetTokens : 0;
+      set({
+        breakdown: {
+          totalTokens,
+          budgetTokens,
+          usagePercent,
+          thresholdColor: computeThreshold(usagePercent),
+          categories,
+        },
+      });
     } catch {
-      // Pi not connected yet — ignore
+      // Snapshot not available yet
     }
   },
 
-  updateFromPiState: (totalTokens: number, budgetTokens: number) => {
-    const usagePercent = budgetTokens > 0 ? totalTokens / budgetTokens : 0;
+  updateBudget: (budgetTokens: number) => {
     const existing = get().breakdown;
+    const totalTokens = existing?.totalTokens ?? 0;
+    const usagePercent = budgetTokens > 0 ? totalTokens / budgetTokens : 0;
     set({
       breakdown: {
         totalTokens,
@@ -101,26 +123,11 @@ export const useContextStore = create<ContextState>((set, get) => ({
     });
   },
 
-  refreshCategories: async () => {
-    try {
-      const snapshot = await getContextBreakdown();
-      if (snapshot?.categories?.length > 0) {
-        set((state) => ({
-          breakdown: state.breakdown
-            ? { ...state.breakdown, categories: snapshot.categories }
-            : null,
-        }));
-      }
-    } catch {
-      // Snapshot not available yet
-    }
-  },
-
   refreshItems: async () => {
     try {
-      await getPiState();
+      await getContextBreakdown();
     } catch {
-      // Pi not connected yet
+      // Snapshot not available yet
     }
   },
 
