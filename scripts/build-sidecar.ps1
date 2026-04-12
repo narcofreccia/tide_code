@@ -22,10 +22,22 @@ if (-not (Test-Path $PiCli)) {
 # Ensure bun is available
 $BunPath = Get-Command bun -ErrorAction SilentlyContinue
 if (-not $BunPath) {
-    Write-Host "bun not found, installing..."
-    npm install -g bun
-    # Refresh PATH
+    Write-Host "bun not found, installing via winget..."
+    $WingetPath = Get-Command winget -ErrorAction SilentlyContinue
+    if (-not $WingetPath) {
+        Write-Error "bun is required, but was not found and winget is unavailable. Install Bun from https://bun.sh/docs/installation or via 'winget install --id Oven-sh.Bun -e'."
+        exit 1
+    }
+
+    winget install --id Oven-sh.Bun -e --accept-package-agreements --accept-source-agreements
+
+    # Refresh PATH and verify that the expected bun executable is now available
     $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
+    $BunPath = Get-Command bun -ErrorAction SilentlyContinue
+    if (-not $BunPath) {
+        Write-Error "Bun installation completed, but 'bun' was not found on PATH. Verify the official Bun installation and try again."
+        exit 1
+    }
 }
 
 # Create binaries directory
