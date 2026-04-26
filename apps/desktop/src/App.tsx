@@ -76,6 +76,15 @@ export function App() {
     getAvailableModels().catch(() => {});
     getMessages().catch(() => {});
     getSessionStats().catch(() => {});
+    // Push persisted thinkingLevel back to Pi so its state matches the UI
+    if (source === "pi_ready") {
+      const persisted = useStreamStore.getState().thinkingLevel;
+      if (persisted && persisted !== "medium") {
+        import("./lib/ipc").then(({ setThinkingLevel }) => {
+          setThinkingLevel(persisted).catch(() => {});
+        });
+      }
+    }
     // Retry models in case registry is still initializing
     setTimeout(() => {
       if (useStreamStore.getState().availableModels.length === 0) {

@@ -13,9 +13,19 @@ const LEVELS: { value: ThinkingLevel; label: string; icon: string }[] = [
 
 export function ThinkingLevelPicker() {
   const thinkingLevel = useStreamStore((s) => s.thinkingLevel);
+  const modelId = useStreamStore((s) => s.modelId);
+  const availableModels = useStreamStore((s) => s.availableModels);
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+
+  // Gate: hide the picker for non-reasoning models. While metadata is loading
+  // (availableModels is empty or current model not yet listed), keep showing
+  // the picker so it doesn't blank-flash on startup.
+  const currentModel = availableModels.find((m) => m.id === modelId);
+  if (currentModel && currentModel.reasoning === false) {
+    return null;
+  }
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -35,6 +45,7 @@ export function ThinkingLevelPicker() {
     useStreamStore.setState({ thinkingLevel: level }); // optimistic update
     try {
       await setThinkingLevelIpc(level);
+      try { localStorage.setItem("tide:thinkingLevel", level); } catch { /* ignore */ }
     } catch (err) {
       console.error("Failed to set thinking level:", err);
     } finally {

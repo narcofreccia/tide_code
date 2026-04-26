@@ -181,7 +181,14 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   modelProvider: "",
   modelId: "",
   availableModels: [],
-  thinkingLevel: "medium" as ThinkingLevel,
+  thinkingLevel: ((): ThinkingLevel => {
+    try {
+      const stored = typeof localStorage !== "undefined" ? localStorage.getItem("tide:thinkingLevel") : null;
+      const valid: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+      if (stored && (valid as string[]).includes(stored)) return stored as ThinkingLevel;
+    } catch { /* ignore localStorage errors (e.g. private mode) */ }
+    return "medium";
+  })(),
   sessionStats: {},
   isCompacting: false,
   isRetrying: false,
@@ -796,7 +803,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
                           : typeof msg.content === "string" ? msg.content : "";
                         restored[i] = {
                           ...(r as ToolCallMessage),
-                          status: msg.isError ? "error" as const : "completed" as const,
+                          status: (msg.isError || (msg as any).details?.isError) ? "error" as const : "completed" as const,
                           resultJson: resultText || undefined,
                           completedAt: ts,
                         };

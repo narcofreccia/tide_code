@@ -95,18 +95,18 @@ export function classifyPrompt(text: string): ClassifyResult {
 // ── Model tier hints (substring → tier) ─────────────────────
 
 const QUICK_MODEL_PATTERNS = [
-  "flash", "4o-mini", "haiku", "lite", "instant",
+  "flash", "4o-mini", "haiku", "lite", "instant", "v4-flash",
   // Note: "nano" and "small" excluded — too weak for coding tasks even at quick tier
 ];
 const COMPLEX_MODEL_PATTERNS = [
-  "opus", "o1-pro", "o3-pro", "5.3-codex", "5-codex", "gpt-5",
+  "opus", "o1-pro", "o3-pro", "5.5-codex", "5.3-codex", "5-codex", "gpt-5", "v4-pro",
 ];
 const EXCLUDED_MODEL_PATTERNS = [
   "codex-mini", "embedding", "tts", "whisper", "dall-e", "moderation",
 ];
 
 export function resolveRouterModels(
-  availableModels: Array<{ id: string; provider: string; name?: string }>,
+  availableModels: Array<{ id: string; provider: string; name?: string; reasoning?: boolean; cost?: { input: number; output: number } }>,
   currentModel?: { id: string; provider: string },
 ): Record<Tier, ModelRef> | null {
   // Filter out non-chat models
@@ -122,12 +122,28 @@ export function resolveRouterModels(
 
   for (const m of chatModels) {
     const lower = m.id.toLowerCase();
+    const ref = { provider: m.provider, id: m.id };
+
+    // Prefer Pi metadata when available — it's authoritative and future-proof
+    // against new model naming. Fall back to substring patterns for models
+    // that ship without populated cost/reasoning fields.
+    if (typeof m.cost?.input === "number") {
+      if (m.reasoning === true || m.cost.input >= 5) {
+        complex.push(ref);
+      } else if (m.cost.input <= 0.5) {
+        quick.push(ref);
+      } else {
+        standard.push(ref);
+      }
+      continue;
+    }
+
     if (QUICK_MODEL_PATTERNS.some((p) => lower.includes(p))) {
-      quick.push({ provider: m.provider, id: m.id });
+      quick.push(ref);
     } else if (COMPLEX_MODEL_PATTERNS.some((p) => lower.includes(p))) {
-      complex.push({ provider: m.provider, id: m.id });
+      complex.push(ref);
     } else {
-      standard.push({ provider: m.provider, id: m.id });
+      standard.push(ref);
     }
   }
 

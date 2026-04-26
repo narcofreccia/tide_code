@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { classifyPrompt } from "./tide-classify.js";
@@ -413,8 +413,7 @@ export default function tidePlanner(pi: ExtensionAPI) {
       // During orchestration, skip clarification — proceed with best judgment
       if (isOrchestrated) {
         return {
-          content: [{ type: "text" as const, text: "Skipping clarification (orchestrated mode) — proceed with best judgment." }],
-        };
+          content: [{ type: "text" as const, text: "Skipping clarification (orchestrated mode) — proceed with best judgment." }], details: null };
       }
 
       // Broadcast full question set to frontend for rendering
@@ -451,14 +450,12 @@ export default function tidePlanner(pi: ExtensionAPI) {
 
       if (response === TIMEOUT_SENTINEL) {
         return {
-          content: [{ type: "text" as const, text: `Clarification timed out after ${timeoutSecs}s — proceeding with best judgment.` }],
-        };
+          content: [{ type: "text" as const, text: `Clarification timed out after ${timeoutSecs}s — proceeding with best judgment.` }], details: null };
       }
 
       if (!response) {
         return {
-          content: [{ type: "text" as const, text: "User skipped clarification — proceeding with best judgment." }],
-        };
+          content: [{ type: "text" as const, text: "User skipped clarification — proceeding with best judgment." }], details: null };
       }
 
       // Response is a JSON string of { questionId: selectedValue }
@@ -512,18 +509,12 @@ export default function tidePlanner(pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const plan = loadPlan(ctx.cwd, params.planId);
       if (!plan) {
-        return {
-          content: [{ type: "text" as const, text: `Plan not found: ${params.planId}` }],
-          isError: true,
-        };
+        throw new Error(`Plan not found: ${params.planId}`);
       }
 
       const step = plan.steps.find((s) => s.id === params.stepId);
       if (!step) {
-        return {
-          content: [{ type: "text" as const, text: `Step not found: ${params.stepId}` }],
-          isError: true,
-        };
+        throw new Error(`Step not found: ${params.stepId}`);
       }
 
       step.status = params.status;
@@ -576,18 +567,12 @@ export default function tidePlanner(pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const plan = loadPlan(ctx.cwd, params.planId);
       if (!plan) {
-        return {
-          content: [{ type: "text" as const, text: `Plan not found: ${params.planId}` }],
-          isError: true,
-        };
+        throw new Error(`Plan not found: ${params.planId}`);
       }
 
       const step = plan.steps.find((s) => s.id === params.stepId);
       if (!step) {
-        return {
-          content: [{ type: "text" as const, text: `Step not found: ${params.stepId}` }],
-          isError: true,
-        };
+        throw new Error(`Step not found: ${params.stepId}`);
       }
 
       step.summary = params.summary;
@@ -605,8 +590,7 @@ export default function tidePlanner(pi: ExtensionAPI) {
             type: "text" as const,
             text: `Saved summary for ${params.stepId}: "${params.summary.slice(0, 100)}${params.summary.length > 100 ? "..." : ""}"`,
           },
-        ],
-      };
+        ], details: null };
     },
   });
 
@@ -653,10 +637,7 @@ export default function tidePlanner(pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const plan = loadPlan(ctx.cwd, params.planId);
       if (!plan) {
-        return {
-          content: [{ type: "text" as const, text: `Plan not found: ${params.planId}` }],
-          isError: true,
-        };
+        throw new Error(`Plan not found: ${params.planId}`);
       }
 
       if (params.title) plan.title = params.title;

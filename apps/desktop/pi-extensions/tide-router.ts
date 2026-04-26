@@ -304,7 +304,7 @@ export default function tideRouter(pi: ExtensionAPI) {
     // ── Switch model with fallback chain ──────────────────
     const currentModel = ctx.model;
     log(`Switching: ${currentModel?.provider}/${currentModel?.id} → ${target.provider}/${target.id} (tier: ${tier})`);
-    const success = await trySetModel(pi, target);
+    const success = await trySetModel(pi, ctx, target);
     if (success) {
       log(`Switched to ${target.provider}/${target.id} for ${tier} tier`);
       currentRouterState = { sessionId, routedModel: { provider: target.provider, id: target.id }, tier };
@@ -319,7 +319,7 @@ export default function tideRouter(pi: ExtensionAPI) {
       let fallbackSuccess = false;
       for (const fallback of fallbackModels) {
         log(`Trying fallback: ${fallback.provider}/${fallback.id}`);
-        if (await trySetModel(pi, fallback)) {
+        if (await trySetModel(pi, ctx, fallback)) {
           log(`Fallback succeeded: ${fallback.provider}/${fallback.id}`);
           currentRouterState = { sessionId, routedModel: { provider: fallback.provider, id: fallback.id }, tier };
           persistRouterState(ctx.cwd, currentRouterState);
@@ -339,9 +339,25 @@ export default function tideRouter(pi: ExtensionAPI) {
   });
 }
 
-async function trySetModel(pi: ExtensionAPI, model: { provider: string; id: string }): Promise<boolean> {
+async function trySetModel(pi: ExtensionAPI, ctx: any, model: { provider: string; id: string }): Promise<boolean> {
   try {
-    return await pi.setModel(model);
+    const fullModel = ctx.modelRegistry.find(model.provider, model.id);
+    if (!fullModel) {
+      log(`Model not found in registry: ${model.provider}/${model.id}`);
+      return false;
+    }
+    const ok = await pi.setModel(fullModel);
+    if (ok && fullModel.reasoning === false) {
+      // Non-reasoning models silently ignore thinking-level requests; force "off" so
+      // the UI reflects reality and Pi doesn't waste tokens computing thinking that
+      // the model can't use.
+      const current = pi.getThinkingLevel?.();
+      if (current && current !== "off") {
+        log(`Switched to non-reasoning model ${model.provider}/${model.id} — forcing thinkingLevel "off" (was "${current}")`);
+        pi.setThinkingLevel?.("off");
+      }
+    }
+    return ok;
   } catch (err) {
     log(`Error switching to ${model.provider}/${model.id}: ${err}`);
     return false;

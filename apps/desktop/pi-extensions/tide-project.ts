@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -328,10 +328,7 @@ export default function tideProject(pi: ExtensionAPI) {
       const tags = loadTags(ctx.cwd);
       const idx = tags.findIndex((t) => t.id === params.id);
       if (idx === -1) {
-        return {
-          content: [{ type: "text" as const, text: `Tag not found: ${params.id}` }],
-          isError: true,
-        };
+        throw new Error(`Tag not found: ${params.id}`);
       }
       const removed = tags.splice(idx, 1)[0];
       saveTags(ctx.cwd, tags);
@@ -358,9 +355,9 @@ export default function tideProject(pi: ExtensionAPI) {
       if (params.key) {
         const entry = entries.find((e) => e.key === params.key);
         if (!entry) {
-          return { content: [{ type: "text" as const, text: `No memory entry for key: ${params.key}` }] };
+          return { content: [{ type: "text" as const, text: `No memory entry for key: ${params.key}` }], details: null };
         }
-        return { content: [{ type: "text" as const, text: JSON.stringify(entry, null, 2) }] };
+        return { content: [{ type: "text" as const, text: JSON.stringify(entry, null, 2) }], details: null };
       }
       return {
         content: [{ type: "text" as const, text: JSON.stringify(entries, null, 2) }],
@@ -417,14 +414,11 @@ export default function tideProject(pi: ExtensionAPI) {
       const entries = loadMemory(ctx.cwd);
       const idx = entries.findIndex((e) => e.key === params.key);
       if (idx === -1) {
-        return {
-          content: [{ type: "text" as const, text: `No memory entry for key: ${params.key}` }],
-          isError: true,
-        };
+        throw new Error(`No memory entry for key: ${params.key}`);
       }
       entries.splice(idx, 1);
       saveMemory(ctx.cwd, entries);
-      return { content: [{ type: "text" as const, text: `Deleted memory: ${params.key}` }] };
+      return { content: [{ type: "text" as const, text: `Deleted memory: ${params.key}` }], details: null };
     },
   });
 }

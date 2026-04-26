@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 
 const log = (msg: string) => process.stderr.write(`[tide:web-search] ${msg}\n`);
 
@@ -44,15 +44,7 @@ export default function tideWebSearch(pi: ExtensionAPI) {
     async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
       const key = process.env.TAVILY_API_KEY;
       if (!key) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: "Web search not available. Set your Tavily API key in Settings > Provider Keys.",
-            },
-          ],
-          isError: true,
-        };
+        throw new Error("Web search not available. Set your Tavily API key in Settings > Provider Keys.");
       }
 
       try {
@@ -78,15 +70,7 @@ export default function tideWebSearch(pi: ExtensionAPI) {
         if (!resp.ok) {
           const errText = await resp.text().catch(() => "Unknown error");
           log(`Search failed: ${resp.status} ${errText}`);
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: `Web search failed (${resp.status}): ${errText}`,
-              },
-            ],
-            isError: true,
-          };
+          throw new Error(`Web search failed (${resp.status}): ${errText}`);
         }
 
         const data = (await resp.json()) as {
@@ -119,23 +103,14 @@ export default function tideWebSearch(pi: ExtensionAPI) {
         };
       } catch (err: any) {
         if (err.name === "AbortError") {
+          // Cancellation is not an error — return graceful message
           return {
-            content: [
-              { type: "text" as const, text: "Search was cancelled." },
-            ],
-            isError: true,
+            content: [{ type: "text" as const, text: "Search was cancelled." }],
+            details: null,
           };
         }
         log(`Search error: ${err.message}`);
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Web search error: ${err.message}`,
-            },
-          ],
-          isError: true,
-        };
+        throw new Error(`Web search error: ${err.message}`);
       }
     },
   });
@@ -155,15 +130,7 @@ export default function tideWebSearch(pi: ExtensionAPI) {
     async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
       const key = process.env.TAVILY_API_KEY;
       if (!key) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: "Web extract not available. Set your Tavily API key in Settings > Provider Keys.",
-            },
-          ],
-          isError: true,
-        };
+        throw new Error("Web extract not available. Set your Tavily API key in Settings > Provider Keys.");
       }
 
       try {
@@ -182,15 +149,7 @@ export default function tideWebSearch(pi: ExtensionAPI) {
         if (!resp.ok) {
           const errText = await resp.text().catch(() => "Unknown error");
           log(`Extract failed: ${resp.status} ${errText}`);
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: `Failed to extract content (${resp.status}): ${errText}`,
-              },
-            ],
-            isError: true,
-          };
+          throw new Error(`Failed to extract content (${resp.status}): ${errText}`);
         }
 
         const data = (await resp.json()) as {
@@ -205,6 +164,7 @@ export default function tideWebSearch(pi: ExtensionAPI) {
                 text: "No content could be extracted from the URL.",
               },
             ],
+            details: null,
           };
         }
 
@@ -225,22 +185,12 @@ export default function tideWebSearch(pi: ExtensionAPI) {
       } catch (err: any) {
         if (err.name === "AbortError") {
           return {
-            content: [
-              { type: "text" as const, text: "Extraction was cancelled." },
-            ],
-            isError: true,
+            content: [{ type: "text" as const, text: "Extraction was cancelled." }],
+            details: null,
           };
         }
         log(`Extract error: ${err.message}`);
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Web extract error: ${err.message}`,
-            },
-          ],
-          isError: true,
-        };
+        throw new Error(`Web extract error: ${err.message}`);
       }
     },
   });

@@ -14,7 +14,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 
 const log = (msg: string) => process.stderr.write(`[tide:expert-comms] ${msg}\n`);
 
@@ -61,13 +61,17 @@ function getTeammates(sessionDir: string, selfName: string): string[] {
 }
 
 export default function tideExpertComms(pi: ExtensionAPI) {
-  const sessionDir = process.env.TIDE_EXPERTS_SESSION_DIR;
-  const agentName = process.env.TIDE_EXPERTS_AGENT_NAME;
+  const sessionDirEnv = process.env.TIDE_EXPERTS_SESSION_DIR;
+  const agentNameEnv = process.env.TIDE_EXPERTS_AGENT_NAME;
 
-  if (!sessionDir || !agentName) {
+  if (!sessionDirEnv || !agentNameEnv) {
     log("Missing TIDE_EXPERTS_SESSION_DIR or TIDE_EXPERTS_AGENT_NAME, skipping registration");
     return;
   }
+
+  // Re-bind as non-nullable so closures capture the narrowed type.
+  const sessionDir: string = sessionDirEnv;
+  const agentName: string = agentNameEnv;
 
   log(`Registered for agent "${agentName}" in session ${path.basename(sessionDir)}`);
 
@@ -175,6 +179,7 @@ export default function tideExpertComms(pi: ExtensionAPI) {
       const target = params.to === "*" ? "all teammates" : params.to;
       return {
         content: [{ type: "text" as const, text: `Message sent to ${target} (id: ${msg.id})` }],
+        details: null,
       };
     },
   });
@@ -203,6 +208,7 @@ export default function tideExpertComms(pi: ExtensionAPI) {
       if (messages.length === 0) {
         return {
           content: [{ type: "text" as const, text: unreadOnly ? "No new messages." : "Inbox is empty." }],
+          details: null,
         };
       }
 
@@ -221,6 +227,7 @@ export default function tideExpertComms(pi: ExtensionAPI) {
           type: "text" as const,
           text: `## ${messages.length} message(s)\n\n${formatted}`,
         }],
+        details: null,
       };
     },
   });
@@ -298,6 +305,7 @@ export default function tideExpertComms(pi: ExtensionAPI) {
           type: "text" as const,
           text: `Finding posted to shared board (id: ${finding.id}, ${params.severity} ${params.category})`,
         }],
+        details: null,
       };
     },
   });
@@ -315,14 +323,14 @@ export default function tideExpertComms(pi: ExtensionAPI) {
     async execute(_id, params) {
       const findingsPath = path.join(sessionDir, "shared", "findings.json");
       if (!fs.existsSync(findingsPath)) {
-        return { content: [{ type: "text" as const, text: "No findings yet." }] };
+        return { content: [{ type: "text" as const, text: "No findings yet." }] , details: null };
       }
 
       let findings: any[];
       try {
         findings = JSON.parse(fs.readFileSync(findingsPath, "utf-8"));
       } catch {
-        return { content: [{ type: "text" as const, text: "Error reading findings." }] };
+        return { content: [{ type: "text" as const, text: "Error reading findings." }] , details: null };
       }
 
       if (params.category) {
@@ -330,7 +338,7 @@ export default function tideExpertComms(pi: ExtensionAPI) {
       }
 
       if (findings.length === 0) {
-        return { content: [{ type: "text" as const, text: "No findings match the filter." }] };
+        return { content: [{ type: "text" as const, text: "No findings match the filter." }] , details: null };
       }
 
       const formatted = findings.map(f => {
@@ -344,6 +352,7 @@ export default function tideExpertComms(pi: ExtensionAPI) {
           type: "text" as const,
           text: `## ${findings.length} finding(s)\n\n${formatted}`,
         }],
+        details: null,
       };
     },
   });

@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import * as path from "node:path";
 import * as fs from "node:fs";
 
@@ -107,28 +107,15 @@ export default function tideIndex(pi: ExtensionAPI) {
       ),
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      if (signal?.aborted) return { content: [{ type: "text" as const, text: "Cancelled" }], isError: true };
+      if (signal?.aborted) return { content: [{ type: "text" as const, text: "Cancelled" }], details: null };
       const db = getDb(ctx.cwd);
       if (!db) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: "Code index not available. The workspace may not have been indexed yet.",
-            },
-          ],
-          isError: true,
-        };
+        throw new Error("Code index not available. The workspace may not have been indexed yet.");
       }
 
       const repoId = getRepoId(db, ctx.cwd);
       if (!repoId) {
-        return {
-          content: [
-            { type: "text" as const, text: "Workspace not indexed yet." },
-          ],
-          isError: true,
-        };
+        throw new Error("Workspace not indexed yet.");
       }
 
       let rows;
@@ -174,28 +161,15 @@ export default function tideIndex(pi: ExtensionAPI) {
       }),
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      if (signal?.aborted) return { content: [{ type: "text" as const, text: "Cancelled" }], isError: true };
+      if (signal?.aborted) return { content: [{ type: "text" as const, text: "Cancelled" }], details: null };
       const db = getDb(ctx.cwd);
       if (!db) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: "Code index not available.",
-            },
-          ],
-          isError: true,
-        };
+        throw new Error("Code index not available.");
       }
 
       const repoId = getRepoId(db, ctx.cwd);
       if (!repoId) {
-        return {
-          content: [
-            { type: "text" as const, text: "Workspace not indexed yet." },
-          ],
-          isError: true,
-        };
+        throw new Error("Workspace not indexed yet.");
       }
 
       const rows = db
@@ -216,6 +190,7 @@ export default function tideIndex(pi: ExtensionAPI) {
               text: `No symbols found for "${params.filePath}". File may not be indexed (unsupported language or not in workspace).`,
             },
           ],
+          details: null,
         };
       }
 
@@ -245,15 +220,10 @@ export default function tideIndex(pi: ExtensionAPI) {
       }),
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      if (signal?.aborted) return { content: [{ type: "text" as const, text: "Cancelled" }], isError: true };
+      if (signal?.aborted) return { content: [{ type: "text" as const, text: "Cancelled" }], details: null };
       const db = getDb(ctx.cwd);
       if (!db) {
-        return {
-          content: [
-            { type: "text" as const, text: "Code index not available." },
-          ],
-          isError: true,
-        };
+        throw new Error("Code index not available.");
       }
 
       const row = db
@@ -268,15 +238,7 @@ export default function tideIndex(pi: ExtensionAPI) {
         .get(params.symbolId) as any;
 
       if (!row) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Symbol not found: "${params.symbolId}"`,
-            },
-          ],
-          isError: true,
-        };
+        throw new Error(`Symbol not found: "${params.symbolId}"`);
       }
 
       // Read the actual source code for this symbol
@@ -332,25 +294,15 @@ export default function tideIndex(pi: ExtensionAPI) {
       ),
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      if (signal?.aborted) return { content: [{ type: "text" as const, text: "Cancelled" }], isError: true };
+      if (signal?.aborted) return { content: [{ type: "text" as const, text: "Cancelled" }], details: null };
       const db = getDb(ctx.cwd);
       if (!db) {
-        return {
-          content: [
-            { type: "text" as const, text: "Code index not available." },
-          ],
-          isError: true,
-        };
+        throw new Error("Code index not available.");
       }
 
       const repoId = getRepoId(db, ctx.cwd);
       if (!repoId) {
-        return {
-          content: [
-            { type: "text" as const, text: "Workspace not indexed yet." },
-          ],
-          isError: true,
-        };
+        throw new Error("Workspace not indexed yet.");
       }
 
       const limit = params.limit || 20;
@@ -401,25 +353,15 @@ export default function tideIndex(pi: ExtensionAPI) {
     promptSnippet: "Get high-level repo overview (file counts, symbol counts)",
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
-      if (signal?.aborted) return { content: [{ type: "text" as const, text: "Cancelled" }], isError: true };
+      if (signal?.aborted) return { content: [{ type: "text" as const, text: "Cancelled" }], details: null };
       const db = getDb(ctx.cwd);
       if (!db) {
-        return {
-          content: [
-            { type: "text" as const, text: "Code index not available." },
-          ],
-          isError: true,
-        };
+        throw new Error("Code index not available.");
       }
 
       const repoId = getRepoId(db, ctx.cwd);
       if (!repoId) {
-        return {
-          content: [
-            { type: "text" as const, text: "Workspace not indexed yet." },
-          ],
-          isError: true,
-        };
+        throw new Error("Workspace not indexed yet.");
       }
 
       const repo = db

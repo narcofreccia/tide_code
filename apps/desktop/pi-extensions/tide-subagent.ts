@@ -12,7 +12,7 @@ import { setMaxListeners } from "node:events";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import {
   type AgentResult,
   type ModelRef,
@@ -92,7 +92,7 @@ export default function tideSubagent(pi: ExtensionAPI) {
       log(`Spawning explorer: model=${model || "default"}, task="${params.task.slice(0, 60)}..."`);
 
       if (onUpdate) {
-        onUpdate({ content: [{ type: "text", text: "Exploring codebase..." }] });
+        onUpdate({ content: [{ type: "text", text: "Exploring codebase..." }], details: null });
       }
 
       const result = await runAgent({
@@ -113,10 +113,7 @@ export default function tideSubagent(pi: ExtensionAPI) {
       const usageStr = `(${result.usage.turns} turns, ${formatTokens(totalTokens)} tokens)`;
 
       if (result.exitCode !== 0) {
-        return {
-          content: [{ type: "text" as const, text: `Exploration failed: ${result.error || "unknown error"}\n${usageStr}` }],
-          isError: true,
-        };
+        throw new Error(`Exploration failed: ${result.error || "unknown error"}\n${usageStr}`);
       }
 
       log(`Explorer completed ${usageStr}`);
@@ -154,7 +151,7 @@ export default function tideSubagent(pi: ExtensionAPI) {
       log(`Spawning researcher: model=${model || "default"}, query="${params.query.slice(0, 60)}..."`);
 
       if (onUpdate) {
-        onUpdate({ content: [{ type: "text", text: "Searching the web..." }] });
+        onUpdate({ content: [{ type: "text", text: "Searching the web..." }], details: null });
       }
 
       const result = await runAgent({
@@ -175,10 +172,7 @@ export default function tideSubagent(pi: ExtensionAPI) {
       const usageStr = `(${result.usage.turns} turns, ${formatTokens(totalTokens)} tokens)`;
 
       if (result.exitCode !== 0) {
-        return {
-          content: [{ type: "text" as const, text: `Research failed: ${result.error || "unknown error"}\n${usageStr}` }],
-          isError: true,
-        };
+        throw new Error(`Research failed: ${result.error || "unknown error"}\n${usageStr}`);
       }
 
       log(`Researcher completed ${usageStr}`);
@@ -261,8 +255,7 @@ export default function tideSubagent(pi: ExtensionAPI) {
               content: [{
                 type: "text",
                 text: `Progress: ${completedCount.value}/${params.tasks.length} tasks completed`,
-              }],
-            });
+              }], details: null });
           }
 
           return result;

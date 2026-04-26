@@ -102,7 +102,15 @@ export default function tideContext(pi: ExtensionAPI) {
     } catch { /* use fallback */ }
     const toolDefTokens = toolCount * 500;
 
-    const totalTokens = systemTokens + conversationTokens + toolResultTokens + toolDefTokens;
+    // Prefer Pi's authoritative count if available — eliminates drift between
+    // Tide's heuristic (length/3.5) and the LLM's actual tokenization.
+    // The category breakdown still uses the heuristic for proportions; we only
+    // anchor the TOTAL to Pi.
+    const piUsage = ctx.getContextUsage?.();
+    const heuristicTotal = systemTokens + conversationTokens + toolResultTokens + toolDefTokens;
+    const totalTokens = (piUsage && typeof piUsage.tokens === "number" && piUsage.tokens > 0)
+      ? piUsage.tokens
+      : heuristicTotal;
 
     const categories: CategoryBreakdown[] = [];
     if (systemTokens > 0) {

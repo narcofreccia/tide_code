@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { getContextBreakdown, getContextExclusions, excludeContextMessage, includeContextMessage } from "../lib/ipc";
 
-export type ThresholdColor = "green" | "yellow" | "red";
+export type ThresholdColor = "green" | "yellow" | "amber" | "red";
 
 export interface CategoryBreakdown {
   category: string;
@@ -38,6 +38,9 @@ export interface ContextPack {
 
 function computeThreshold(percent: number): ThresholdColor {
   if (percent >= 0.85) return "red";
+  // Pre-compaction warning band — auto-compaction typically fires near 85%, this gives
+  // 2-3 turns of advance notice so users can manually compact or wrap up.
+  if (percent >= 0.75) return "amber";
   if (percent >= 0.6) return "yellow";
   return "green";
 }

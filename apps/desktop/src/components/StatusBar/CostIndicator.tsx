@@ -11,6 +11,10 @@ const MODEL_PRICING: Record<string, { input: number; output: number; label: stri
   "claude-haiku-4-5-20251001": { input: 0.8, output: 4, label: "Haiku 4.5" },
   "gemini-2.0-flash": { input: 0.075, output: 0.3, label: "Gemini Flash" },
   "gemini-2.5-pro": { input: 1.25, output: 10, label: "Gemini Pro" },
+  "gemini-3.1-flash-lite-preview": { input: 0.04, output: 0.16, label: "Gemini 3.1 Flash Lite" },
+  "openai-codex/gpt-5.5": { input: 1.25, output: 10, label: "GPT-5.5 Codex" },
+  "deepseek-v4-flash": { input: 0.14, output: 0.28, label: "DeepSeek V4 Flash" },
+  "deepseek-v4-pro": { input: 0.55, output: 2.19, label: "DeepSeek V4 Pro" },
 };
 
 // ── Helpers ─────────────────────────────────────────────────

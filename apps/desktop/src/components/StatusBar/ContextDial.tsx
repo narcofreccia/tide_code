@@ -10,6 +10,7 @@ const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 const COLORS: Record<string, string> = {
   green: "#22c55e",
   yellow: "#eab308",
+  amber: "#f97316",
   red: "#ef4444",
 };
 

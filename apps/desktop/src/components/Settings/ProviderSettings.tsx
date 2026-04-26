@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { keychainSetKey, keychainDeleteKey, keychainHasKey } from "../../lib/keychain";
-import { restartPi, oauthListProviders, oauthLogout, ptyCreate, type OAuthProviderStatus } from "../../lib/ipc";
+import { restartPi, oauthListProviders, oauthLogout, ptyCreate, ptyWrite, type OAuthProviderStatus } from "../../lib/ipc";
 import { useTerminalStore } from "../../stores/terminalStore";
 
 interface ProviderConfig {
@@ -107,6 +107,42 @@ export function ProviderSettings() {
       useTerminalStore.getState().setVisible(true);
     } catch (err) {
       console.error("Failed to open terminal:", err);
+    }
+  };
+
+  /** Open a terminal pre-populated with the Pi /login flow for a specific provider. */
+  const handleOAuthLogin = async (providerId: string) => {
+    setOauthLoading(providerId);
+    try {
+      const ptyId = await ptyCreate();
+      useTerminalStore.getState().addTab(ptyId);
+      useTerminalStore.getState().setVisible(true);
+      // Give the shell a moment to spawn before typing into it.
+      setTimeout(async () => {
+        try {
+          await ptyWrite(ptyId, `npx pi\r`);
+          // Wait for Pi to start, then send /login <provider>
+          setTimeout(async () => {
+            try { await ptyWrite(ptyId, `/login ${providerId}\r`); } catch { /* ignore */ }
+            // After user finishes flow in terminal, they can hit Refresh — auto-poll for ~2 minutes.
+            const start = Date.now();
+            const poll = setInterval(async () => {
+              await loadOAuthStatus();
+              if (isOAuthLoggedIn(providerId) || Date.now() - start > 120_000) {
+                clearInterval(poll);
+                setOauthLoading(null);
+                if (isOAuthLoggedIn(providerId)) setNeedsRestart(true);
+              }
+            }, 3000);
+          }, 1500);
+        } catch (err) {
+          console.error("Failed to write to pty:", err);
+          setOauthLoading(null);
+        }
+      }, 300);
+    } catch (err) {
+      console.error("Failed to start OAuth login:", err);
+      setOauthLoading(null);
     }
   };
 
@@ -250,39 +286,18 @@ export function ProviderSettings() {
             </button>
           ) : (
             <div style={s.loginSteps}>
-              <div style={s.loginStep}>
-                <span style={s.stepNum}>1.</span>
-                <span style={s.loginHint}>Open a terminal and run</span>
-                <code style={s.commandCode}>npx pi</code>
-                <button
-                  style={s.copyBtn}
-                  title="Copy command"
-                  onClick={() => navigator.clipboard.writeText("npx pi")}
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                  </svg>
-                </button>
-              </div>
-              <div style={s.loginStep}>
-                <span style={s.stepNum}>2.</span>
-                <span style={s.loginHint}>Inside Pi, type</span>
-                <code style={s.commandCode}>/login</code>
-                <button
-                  style={s.copyBtn}
-                  title="Copy command"
-                  onClick={() => navigator.clipboard.writeText("/login")}
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                  </svg>
-                </button>
-              </div>
-              <button style={s.openTermBtn} onClick={handleOpenTerminal}>
-                Open Terminal
+              <button
+                style={s.openTermBtn}
+                onClick={() => handleOAuthLogin(item.id)}
+                disabled={oauthLoading === item.id}
+                title={`Open Pi in a terminal and run /login ${item.id}`}
+              >
+                {oauthLoading === item.id ? "Waiting for login…" : "Login"}
               </button>
+              <div style={{ ...s.loginHint, fontSize: 11, marginTop: 6 }}>
+                Opens a terminal and runs <code style={s.commandCode}>npx pi</code> →{" "}
+                <code style={s.commandCode}>/login {item.id}</code>. Complete the OAuth flow in your browser; this dialog will auto-detect when login succeeds.
+              </div>
             </div>
           )}
         </div>

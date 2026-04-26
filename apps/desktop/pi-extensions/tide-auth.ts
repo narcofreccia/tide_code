@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 
 /**
  * Tide Auth Extension
@@ -17,7 +17,7 @@ export default function tideAuth(pi: ExtensionAPI) {
       "List available OAuth/subscription providers and their login status. " +
       "Used by Tide Settings UI. Do not call unless asked.",
     promptSnippet: "tide_oauth_providers: List OAuth providers and login status (Tide UI only)",
-    params: Type.Object({}),
+    parameters: Type.Object({}),
     execute: async (_toolCallId, _params, _signal, _onUpdate, ctx) => {
       const authStorage = ctx.modelRegistry.authStorage;
       const oauthProviders = authStorage.getOAuthProviders();
@@ -29,7 +29,7 @@ export default function tideAuth(pi: ExtensionAPI) {
       }));
 
       return {
-        content: JSON.stringify(providers),
+        content: [{ type: "text" as const, text: JSON.stringify(providers) }],
         details: providers as any,
       };
     },
@@ -44,7 +44,7 @@ export default function tideAuth(pi: ExtensionAPI) {
       "anthropic-max, copilot). Opens a browser for authentication. " +
       "Used by Tide Settings UI. Do not call unless asked.",
     promptSnippet: "tide_oauth_login(provider_id): Start OAuth login for a provider (Tide UI only)",
-    params: Type.Object({
+    parameters: Type.Object({
       provider_id: Type.String({ description: "OAuth provider ID to login to" }),
     }),
     execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
@@ -55,7 +55,7 @@ export default function tideAuth(pi: ExtensionAPI) {
       if (!provider) {
         const available = providers.map((p) => p.id).join(", ");
         return {
-          content: `Unknown provider "${params.provider_id}". Available: ${available || "none"}`,
+          content: [{ type: "text" as const, text: `Unknown provider "${params.provider_id}". Available: ${available || "none"}` }],
           details: { success: false, error: "unknown_provider" } as any,
         };
       }
@@ -72,10 +72,7 @@ export default function tideAuth(pi: ExtensionAPI) {
           },
           onPrompt: async (prompt) => {
             // Use Pi's extension UI to ask the user for input (e.g. paste callback URL)
-            const result = await ctx.ui.input({
-              title: prompt.message,
-              placeholder: prompt.placeholder || "",
-            });
+            const result = await ctx.ui.input(prompt.message, prompt.placeholder || "");
             return result || "";
           },
           onProgress: (_message) => {
@@ -85,13 +82,13 @@ export default function tideAuth(pi: ExtensionAPI) {
         });
 
         return {
-          content: `Successfully logged in to ${provider.name}.`,
+          content: [{ type: "text" as const, text: `Successfully logged in to ${provider.name}.` }],
           details: { success: true, provider: params.provider_id } as any,
         };
       } catch (err: any) {
         const message = err?.message || String(err);
         return {
-          content: `Login failed: ${message}`,
+          content: [{ type: "text" as const, text: `Login failed: ${message}` }],
           details: { success: false, error: message } as any,
         };
       }
@@ -106,7 +103,7 @@ export default function tideAuth(pi: ExtensionAPI) {
       "Logout from an OAuth/subscription provider, removing stored credentials. " +
       "Used by Tide Settings UI. Do not call unless asked.",
     promptSnippet: "tide_oauth_logout(provider_id): Logout from an OAuth provider (Tide UI only)",
-    params: Type.Object({
+    parameters: Type.Object({
       provider_id: Type.String({ description: "OAuth provider ID to logout from" }),
     }),
     execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
@@ -115,13 +112,13 @@ export default function tideAuth(pi: ExtensionAPI) {
       try {
         authStorage.logout(params.provider_id);
         return {
-          content: `Logged out from ${params.provider_id}.`,
+          content: [{ type: "text" as const, text: `Logged out from ${params.provider_id}.` }],
           details: { success: true, provider: params.provider_id } as any,
         };
       } catch (err: any) {
         const message = err?.message || String(err);
         return {
-          content: `Logout failed: ${message}`,
+          content: [{ type: "text" as const, text: `Logout failed: ${message}` }],
           details: { success: false, error: message } as any,
         };
       }

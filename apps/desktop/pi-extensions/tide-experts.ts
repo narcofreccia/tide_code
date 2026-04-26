@@ -15,7 +15,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import {
   type PersistentAgent,
   createLogger,
@@ -797,7 +797,6 @@ export default function tideExperts(pi: ExtensionAPI) {
       const cwd = process.cwd();
       initializeDefaults(cwd);
     } catch { /* ignore initialization errors */ }
-    return {};
   });
 
   // ── Team Builder guidance injection ──────────────────
@@ -882,13 +881,7 @@ DO NOT ask about repositories or codebases — the experts will discover those d
       const teamConfig = loadTeamConfig(ctx.cwd, params.team);
       if (!teamConfig) {
         const available = listTeams(ctx.cwd).map(t => t.id).join(", ");
-        return {
-          content: [{
-            type: "text" as const,
-            text: `Team '${params.team}' not found. Available teams: ${available || "(none — create one in Settings > Experts)"}`,
-          }],
-          isError: true,
-        };
+        throw new Error(`Team '${params.team}' not found. Available teams: ${available || "(none — create one in Settings > Experts)"}`);
       }
 
       // Load expert configs
@@ -896,13 +889,7 @@ DO NOT ask about repositories or codebases — the experts will discover those d
       for (const name of teamConfig.experts) {
         const config = loadExpertConfig(ctx.cwd, name);
         if (!config) {
-          return {
-            content: [{
-              type: "text" as const,
-              text: `Expert '${name}' not found. Create it in Settings > Experts.`,
-            }],
-            isError: true,
-          };
+          throw new Error(`Expert '${name}' not found. Create it in Settings > Experts.`);
         }
         expertConfigs.push(config);
       }
@@ -914,8 +901,7 @@ DO NOT ask about repositories or codebases — the experts will discover those d
           content: [{
             type: "text",
             text: `Starting brainstorming with ${expertConfigs.length} experts (${teamConfig.name})...`,
-          }],
-        });
+          }], details: null });
       }
 
       try {
@@ -928,7 +914,7 @@ DO NOT ask about repositories or codebases — the experts will discover those d
           signal,
           onPhaseChange(phase, message) {
             if (onUpdate) {
-              onUpdate({ content: [{ type: "text", text: `[${phase}] ${message}` }] });
+              onUpdate({ content: [{ type: "text", text: `[${phase}] ${message}` }], details: null });
             }
           },
         });
@@ -967,13 +953,7 @@ DO NOT ask about repositories or codebases — the experts will discover those d
         };
 
       } catch (err: any) {
-        return {
-          content: [{
-            type: "text" as const,
-            text: `Brainstorming failed: ${err.message || err}`,
-          }],
-          isError: true,
-        };
+        throw new Error(`Brainstorming failed: ${err.message || err}`);
       }
     },
   });
@@ -1010,36 +990,36 @@ DO NOT ask about repositories or codebases — the experts will discover those d
         case "list": {
           const teams = listTeams(ctx.cwd);
           if (teams.length === 0) {
-            return { content: [{ type: "text" as const, text: "No teams configured. Create one in Settings > Experts." }] };
+            return { content: [{ type: "text" as const, text: "No teams configured. Create one in Settings > Experts." }], details: null };
           }
           const list = teams.map(t =>
             `- **${t.name}** (${t.id}): ${t.experts.length} experts, leader: ${t.leader}, ${t.timeLimitMinutes}m limit`
           ).join("\n");
-          return { content: [{ type: "text" as const, text: `## Expert Teams\n\n${list}` }] };
+          return { content: [{ type: "text" as const, text: `## Expert Teams\n\n${list}` }], details: null };
         }
 
         case "get": {
-          if (!params.teamId) return { content: [{ type: "text" as const, text: "teamId required" }], isError: true };
+          if (!params.teamId) throw new Error("teamId required");
           const team = loadTeamConfig(ctx.cwd, params.teamId);
-          if (!team) return { content: [{ type: "text" as const, text: `Team '${params.teamId}' not found` }], isError: true };
-          return { content: [{ type: "text" as const, text: JSON.stringify(team, null, 2) }] };
+          if (!team) throw new Error(`Team '${params.teamId}' not found`);
+          return { content: [{ type: "text" as const, text: JSON.stringify(team, null, 2) }], details: null };
         }
 
         case "create":
         case "update": {
-          if (!params.config) return { content: [{ type: "text" as const, text: "config required" }], isError: true };
+          if (!params.config) throw new Error("config required");
           const config: TeamConfig = JSON.parse(params.config);
           config.updatedAt = new Date().toISOString();
           if (params.action === "create") config.createdAt = config.updatedAt;
           fs.writeFileSync(path.join(teamsDir, `${config.id}.json`), JSON.stringify(config, null, 2));
-          return { content: [{ type: "text" as const, text: `Team '${config.id}' ${params.action}d` }] };
+          return { content: [{ type: "text" as const, text: `Team '${config.id}' ${params.action}d` }], details: null };
         }
 
         case "delete": {
-          if (!params.teamId) return { content: [{ type: "text" as const, text: "teamId required" }], isError: true };
+          if (!params.teamId) throw new Error("teamId required");
           const filePath = path.join(teamsDir, `${params.teamId}.json`);
           if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-          return { content: [{ type: "text" as const, text: `Team '${params.teamId}' deleted` }] };
+          return { content: [{ type: "text" as const, text: `Team '${params.teamId}' deleted` }], details: null };
         }
       }
     },
@@ -1077,7 +1057,7 @@ DO NOT ask about repositories or codebases — the experts will discover those d
         case "list": {
           const names = listExpertNames(ctx.cwd);
           if (names.length === 0) {
-            return { content: [{ type: "text" as const, text: "No experts configured." }] };
+            return { content: [{ type: "text" as const, text: "No experts configured." }], details: null };
           }
           const list = names.map(name => {
             const config = loadExpertConfig(ctx.cwd, name);
@@ -1085,29 +1065,29 @@ DO NOT ask about repositories or codebases — the experts will discover those d
               ? `- **${config.name}**: ${config.description || "(no description)"} — model: ${config.model ? `${config.model.provider}/${config.model.id}` : "default"}`
               : `- **${name}**: (error loading config)`;
           }).join("\n");
-          return { content: [{ type: "text" as const, text: `## Experts\n\n${list}` }] };
+          return { content: [{ type: "text" as const, text: `## Experts\n\n${list}` }], details: null };
         }
 
         case "get": {
-          if (!params.name) return { content: [{ type: "text" as const, text: "name required" }], isError: true };
+          if (!params.name) throw new Error("name required");
           const filePath = path.join(dir, `${params.name}.md`);
-          if (!fs.existsSync(filePath)) return { content: [{ type: "text" as const, text: `Expert '${params.name}' not found` }], isError: true };
+          if (!fs.existsSync(filePath)) throw new Error(`Expert '${params.name}' not found`);
           const content = fs.readFileSync(filePath, "utf-8");
-          return { content: [{ type: "text" as const, text: content }] };
+          return { content: [{ type: "text" as const, text: content }], details: null };
         }
 
         case "create":
         case "update": {
-          if (!params.name || !params.content) return { content: [{ type: "text" as const, text: "name and content required" }], isError: true };
+          if (!params.name || !params.content) throw new Error("name and content required");
           fs.writeFileSync(path.join(dir, `${params.name}.md`), params.content);
-          return { content: [{ type: "text" as const, text: `Expert '${params.name}' ${params.action}d` }] };
+          return { content: [{ type: "text" as const, text: `Expert '${params.name}' ${params.action}d` }], details: null };
         }
 
         case "delete": {
-          if (!params.name) return { content: [{ type: "text" as const, text: "name required" }], isError: true };
+          if (!params.name) throw new Error("name required");
           const filePath = path.join(dir, `${params.name}.md`);
           if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-          return { content: [{ type: "text" as const, text: `Expert '${params.name}' deleted` }] };
+          return { content: [{ type: "text" as const, text: `Expert '${params.name}' deleted` }], details: null };
         }
       }
     },
@@ -1131,7 +1111,7 @@ DO NOT ask about repositories or codebases — the experts will discover those d
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const sessionsDir = path.join(expertsDir(ctx.cwd), "sessions");
       if (!fs.existsSync(sessionsDir)) {
-        return { content: [{ type: "text" as const, text: "No sessions yet." }] };
+        return { content: [{ type: "text" as const, text: "No sessions yet." }], details: null };
       }
 
       switch (params.action) {
@@ -1141,7 +1121,7 @@ DO NOT ask about repositories or codebases — the experts will discover those d
           }).sort().reverse();
 
           if (dirs.length === 0) {
-            return { content: [{ type: "text" as const, text: "No sessions yet." }] };
+            return { content: [{ type: "text" as const, text: "No sessions yet." }], details: null };
           }
 
           const list = dirs.map(d => {
@@ -1150,25 +1130,25 @@ DO NOT ask about repositories or codebases — the experts will discover those d
             return `- **${state.id}** [${state.phase}]: ${state.topic.slice(0, 60)} (${state.experts.length} experts, ${state.createdAt})`;
           }).join("\n");
 
-          return { content: [{ type: "text" as const, text: `## Past Sessions\n\n${list}` }] };
+          return { content: [{ type: "text" as const, text: `## Past Sessions\n\n${list}` }], details: null };
         }
 
         case "get": {
-          if (!params.sessionId) return { content: [{ type: "text" as const, text: "sessionId required" }], isError: true };
+          if (!params.sessionId) throw new Error("sessionId required");
           const sessionDir = path.join(sessionsDir, params.sessionId);
           const state = loadSessionState(sessionDir);
-          if (!state) return { content: [{ type: "text" as const, text: `Session '${params.sessionId}' not found` }], isError: true };
+          if (!state) throw new Error(`Session '${params.sessionId}' not found`);
 
-          return { content: [{ type: "text" as const, text: JSON.stringify(state, null, 2) }] };
+          return { content: [{ type: "text" as const, text: JSON.stringify(state, null, 2) }], details: null };
         }
 
         case "delete": {
-          if (!params.sessionId) return { content: [{ type: "text" as const, text: "sessionId required" }], isError: true };
+          if (!params.sessionId) throw new Error("sessionId required");
           const sessionDir = path.join(sessionsDir, params.sessionId);
           if (fs.existsSync(sessionDir)) {
             fs.rmSync(sessionDir, { recursive: true, force: true });
           }
-          return { content: [{ type: "text" as const, text: `Session '${params.sessionId}' deleted` }] };
+          return { content: [{ type: "text" as const, text: `Session '${params.sessionId}' deleted` }], details: null };
         }
       }
     },

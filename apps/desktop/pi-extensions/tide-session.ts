@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -161,13 +161,10 @@ export default function tideSession(pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const filePath = path.join(ensureSessionsDir(ctx.cwd), params.filename);
       if (!fs.existsSync(filePath)) {
-        return {
-          content: [{ type: "text" as const, text: `Session not found: ${params.filename}` }],
-          isError: true,
-        };
+        throw new Error(`Session not found: ${params.filename}`);
       }
       const content = fs.readFileSync(filePath, "utf-8");
-      return { content: [{ type: "text" as const, text: content }] };
+      return { content: [{ type: "text" as const, text: content }], details: null };
     },
   });
 }
