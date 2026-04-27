@@ -404,7 +404,17 @@ async function runBrainstormSession(opts: {
         model,
         systemPrompt: expert.systemPrompt,
         extensions,
-        tools: ["read", "grep", "find", "ls"],
+        // Pi treats `tools` as a hard allowlist that also filters extension-registered
+        // tools. The expert prompt below tells the LLM to call send_message,
+        // check_messages, post_finding, read_findings (from tide-expert-comms) and
+        // tide_index_* (from tide-index) — they MUST appear here or the LLM can't see
+        // them and the expert produces an empty outbox.
+        tools: [
+          "read", "grep", "find", "ls",
+          "send_message", "check_messages", "post_finding", "read_findings",
+          "tide_index_file_tree", "tide_index_file_outline",
+          "tide_index_search", "tide_index_repo_outline", "tide_index_get_symbol",
+        ],
         env: {
           TIDE_EXPERTS_SESSION_DIR: sessionDir,
           TIDE_EXPERTS_AGENT_NAME: expert.name,
@@ -494,23 +504,11 @@ async function runBrainstormSession(opts: {
         );
       });
 
-    // Send the leader a monitoring prompt — it observes and asks questions
-    const leaderExplorationPrompt = leaderAgent.prompt(
-      `You are the **Team Leader** overseeing a brainstorming session on:\n\n` +
-      `## Topic\n\n${topic}\n\n` +
-      `## Your Expert Panel\n\n${teammateDesc}\n\n` +
-      `## Instructions\n\n` +
-      `1. Use **check_messages** to monitor what the experts are finding\n` +
-      `2. When experts share their analysis, ask **follow-up questions** to specific experts:\n` +
-      `   - "Security, what's the risk of X?"\n` +
-      `   - "Performance, how would Y scale?"\n` +
-      `3. If you see experts missing an angle, point it out\n` +
-      `4. Do NOT analyze code yourself — rely on your experts\n` +
-      `5. When all experts have reported, broadcast: type="observation", content="[ANALYSIS COMPLETE] All experts reported. Moving to discussion."\n\n` +
-      `Be concise and action-oriented. Your job is to steer, not to do the analysis.`
-    );
-
-    initialPrompts.push(leaderExplorationPrompt);
+    // The leader stays idle during exploration. An LLM has no `await` primitive —
+    // if we run a leader prompt in parallel here, it polls check_messages a few
+    // times, sees an empty inbox, and exits before any expert has had time to
+    // respond. The leader steps in during the discussion phase below, when the
+    // inbox is already populated.
 
     // ── Time limit enforcement ─────────────────────────
 
@@ -590,33 +588,49 @@ async function runBrainstormSession(opts: {
         saveSessionState(sessionDir, state);
         onPhaseChange?.("discussion", "Experts discussing findings...");
 
-        // Domain experts discuss; leader mediates
-        const discussionPrompts = agents
+        // Step 1 — experts cross-discuss in parallel. They mediate among themselves
+        // via send_message; the leader does NOT join this batch (same race as
+        // exploration would otherwise apply).
+        const expertDiscussionPrompts = agents
           .filter(a => !a.exited && a.name !== "leader")
           .map(agent => {
             const es = state.experts.find(e => e.name === agent.name)!;
             es.status = "running";
             return agent.prompt(
               "All experts have completed their initial analysis. Now engage in discussion:\n\n" +
-              "1. Use **check_messages** to read all messages from teammates and the Team Leader\n" +
+              "1. Use **check_messages** to read all messages from teammates\n" +
               "2. Use **read_findings** to see the shared findings board\n" +
               "3. **Respond** to observations and concerns from other experts\n" +
               "4. **Challenge** assumptions you disagree with — be specific\n" +
               "5. **Build** on ideas from teammates with your expertise\n" +
-              "6. **Answer any questions** the Team Leader has asked you\n" +
-              "7. When discussion is complete, broadcast: " +
+              "6. When discussion is complete, broadcast: " +
               'type="observation", content="[DISCUSSION COMPLETE] {your final position}"'
             );
           });
 
-        // Leader drives the discussion — assertive, directive
+        saveSessionState(sessionDir, state);
+        await Promise.allSettled(expertDiscussionPrompts);
+
+        // Update expert statuses (leader still pending below).
+        for (const agent of agents) {
+          if (agent.name === "leader") continue;
+          const es = state.experts.find(e => e.name === agent.name)!;
+          es.status = agent.exited ? "done" : "idle";
+        }
+        saveSessionState(sessionDir, state);
+
+        // Step 2 — leader steps in with a populated inbox to drive the discussion.
+        // Running this AFTER the experts ensures check_messages returns real
+        // content; otherwise the leader's first prompt would race against the
+        // experts (the bug we're fixing here).
         const leaderDiscAgent = agents.find(a => a.name === "leader");
-        if (leaderDiscAgent && !leaderDiscAgent.exited) {
+        if (leaderDiscAgent && !leaderDiscAgent.exited && !timeLimitHit && !signal?.aborted) {
           const es = state.experts.find(e => e.name === "leader")!;
           es.status = "running";
-          discussionPrompts.push(leaderDiscAgent.prompt(
-            "The experts have finished their initial analysis. You are the **Team Leader**. Now **take charge and drive the discussion**:\n\n" +
-            "1. Use **check_messages** to read ALL expert analyses thoroughly\n" +
+          saveSessionState(sessionDir, state);
+          await leaderDiscAgent.prompt(
+            "The experts have finished their initial analysis and discussion. You are the **Team Leader**. Now **take charge and produce mediation**:\n\n" +
+            "1. Use **check_messages** to read ALL expert analyses thoroughly (the inbox is fully populated now)\n" +
             "2. Use **read_findings** to see the shared findings board\n" +
             "3. Summarize what each expert found and identify **where they agree** and **where they disagree**\n" +
             "4. For each disagreement, directly message the relevant experts and ask them to defend or concede:\n" +
@@ -625,18 +639,10 @@ async function runBrainstormSession(opts: {
             "5. Push hard for resolution — don't let experts remain vague or hand-wavy\n" +
             "6. When you've heard enough to make a decision, broadcast:\n" +
             '   type="observation", content="[DISCUSSION COMPLETE] I have enough information to produce the final verdict."'
-          ));
+          );
+          es.status = leaderDiscAgent.exited ? "done" : "idle";
+          saveSessionState(sessionDir, state);
         }
-
-        saveSessionState(sessionDir, state);
-        await Promise.allSettled(discussionPrompts);
-
-        // Update statuses
-        for (const agent of agents) {
-          const es = state.experts.find(e => e.name === agent.name)!;
-          es.status = agent.exited ? "done" : "idle";
-        }
-        saveSessionState(sessionDir, state);
       }
 
       // ── Phase: Synthesis ────────────────────────────

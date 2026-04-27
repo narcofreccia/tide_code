@@ -774,3 +774,79 @@ pub async fn delete_experts_session(
     }
     Ok(())
 }
+
+/// Force-stop the active expert brainstorming session.
+///
+/// 1. Sends Pi an `abort` command — cancels the in-flight tool call, which fires the
+///    `AbortSignal` that `tide_experts_brainstorm.execute()` is awaiting. The
+///    extension's `runBrainstormSession` then kills every spawned expert subprocess
+///    in its `finally` block.
+/// 2. Drops the mailbox watcher so we stop forwarding stale file events.
+/// 3. Marks the latest (or named) session's `state.json` as `phase: "failed"` so the
+///    Past Sessions list shows it correctly.
+/// 4. Emits `experts_changed` so the frontend reloads.
+///
+/// Best-effort throughout — Pi may already be idle, the session dir may not exist
+/// yet (e.g. brainstorm tool was never called). All steps are independent and
+/// non-fatal individually.
+#[tauri::command]
+pub async fn abort_experts_session(
+    state: tauri::State<'_, super::AppState>,
+    app_handle: tauri::AppHandle,
+    session_id: Option<String>,
+) -> Result<(), String> {
+    // 1. Tell Pi to abort the running tool call.
+    if let Some(conn) = state.pi.lock().await.as_ref() {
+        let cmd = serde_json::json!({ "type": "abort" });
+        let _ = conn.send(&cmd).await;
+    }
+
+    // 2. Drop the watcher so we stop forwarding file events.
+    *state.experts_watcher.lock().await = None;
+
+    // 3. Mark the latest (or named) session as failed on disk.
+    let workspace = {
+        let root = state.workspace_root.lock().await;
+        root.clone()
+    };
+    if let Some(workspace) = workspace {
+        let sessions_root = sessions_dir(&workspace);
+        let session_dir = if let Some(sid) = session_id {
+            let dir = sessions_root.join(sid);
+            if dir.is_dir() { Some(dir) } else { None }
+        } else if sessions_root.exists() {
+            std::fs::read_dir(&sessions_root)
+                .ok()
+                .and_then(|rd| rd
+                    .flatten()
+                    .filter(|e| e.path().is_dir())
+                    .max_by_key(|e| e.metadata()
+                        .and_then(|m| m.modified())
+                        .unwrap_or(std::time::UNIX_EPOCH))
+                    .map(|e| e.path()))
+        } else {
+            None
+        };
+
+        if let Some(dir) = session_dir {
+            if let Ok(mut state_json) = load_session_state(&dir) {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
+                let timestamp = format!("{}Z", now.as_secs());
+                if let Some(obj) = state_json.as_object_mut() {
+                    obj.insert("phase".into(), serde_json::json!("failed"));
+                    obj.insert("completedAt".into(), serde_json::json!(timestamp));
+                }
+                if let Ok(content) = serde_json::to_string_pretty(&state_json) {
+                    let _ = std::fs::write(dir.join("state.json"), content);
+                }
+            }
+        }
+    }
+
+    // 4. Notify frontend so it reloads the session list.
+    let _ = app_handle.emit("experts_changed", "all");
+    tracing::info!("Expert session aborted by user");
+    Ok(())
+}

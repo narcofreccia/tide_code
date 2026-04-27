@@ -121,6 +121,30 @@ function isModelExcluded(modelId: string): boolean {
   return EXCLUDED_API_PATTERNS.some((p) => lower.includes(p));
 }
 
+// ── User-Pinned Model ───────────────────────────────────────
+// Written by the Tauri `set_pi_model` command whenever the user picks a
+// model from the UI. When the active model matches the pin, the router
+// skips auto-switching (tool scoping still runs).
+
+interface UserPinnedModel { provider: string; id: string; pinnedAt?: string }
+
+function userPinPath(cwd: string): string {
+  return path.join(cwd, ".tide", "user-pinned-model.json");
+}
+
+function loadUserPin(cwd: string): UserPinnedModel | null {
+  try {
+    const p = userPinPath(cwd);
+    if (fs.existsSync(p)) {
+      const parsed = JSON.parse(fs.readFileSync(p, "utf-8"));
+      if (parsed && typeof parsed.provider === "string" && typeof parsed.id === "string") {
+        return parsed as UserPinnedModel;
+      }
+    }
+  } catch { /* ignore corrupt pin */ }
+  return null;
+}
+
 function loadPersistedRouterState(cwd: string): RouterState | null {
   try {
     const p = routerStatePath(cwd);
@@ -154,6 +178,8 @@ const STANDARD_TOOLS = [
   "tide_index_search", "tide_index_repo_outline",
   // Subagent tools
   "tide_explore", "tide_research", "tide_dispatch",
+  // Experts library CRUD. Brainstorm stays gated behind [tide:experts].
+  "tide_experts_manage", "tide_experts_teams", "tide_experts_sessions",
 ];
 
 // complex/orchestrated: all tools (no filtering)
@@ -210,18 +236,29 @@ export default function tideRouter(pi: ExtensionAPI) {
       return;
     }
 
-    // Skip routing for orchestrated prompts — the orchestrator manages model selection.
+    // Skip routing for orchestrated prompts — the orchestrator manages model selection
+    // and the orchestrator may call any registered tool, so the full toolset is required.
     // The [tide:orchestrated] marker is prepended by the Rust orchestrator.
     const isOrchestrated = prompt.trimStart().startsWith("[tide:orchestrated]");
     if (isOrchestrated) {
-      log("Orchestrated prompt detected, skipping routing");
+      try {
+        const allTools = pi.getAllTools().map((t: any) => t.name || t);
+        pi.setActiveTools(allTools);
+      } catch (err) { log(`Failed to restore tools for orchestrated: ${err}`); }
+      log("Orchestrated prompt detected, skipping routing (restored full toolset)");
       return;
     }
 
-    // Skip routing for expert brainstorming prompts — needs full toolset available.
+    // Skip routing for expert brainstorming prompts — `tide_experts_brainstorm` is
+    // intentionally excluded from STANDARD_TOOLS, so we must restore the full toolset
+    // here or the main agent silently can't call the brainstorm tool.
     const isExperts = prompt.trimStart().startsWith("[tide:experts]");
     if (isExperts) {
-      log("Expert brainstorming prompt detected, skipping routing");
+      try {
+        const allTools = pi.getAllTools().map((t: any) => t.name || t);
+        pi.setActiveTools(allTools);
+      } catch (err) { log(`Failed to restore tools for experts: ${err}`); }
+      log("Expert brainstorming prompt detected, skipping routing (restored full toolset)");
       return;
     }
 
@@ -230,6 +267,19 @@ export default function tideRouter(pi: ExtensionAPI) {
 
     // Dynamic tool scoping based on tier
     scopeToolsForTier(pi, tier, isOrchestrated);
+
+    // Respect user's manual model pick: if the active model matches the pin
+    // file written by `set_pi_model`, never auto-switch off it.
+    const pin = loadUserPin(ctx.cwd);
+    if (pin && ctx.model
+        && ctx.model.provider === pin.provider
+        && ctx.model.id === pin.id) {
+      log(`User-pinned model ${pin.provider}/${pin.id} active, skipping auto-switch`);
+      const sessionId = (ctx as any).sessionFile || (ctx as any).sessionId || "";
+      currentRouterState = { sessionId, routedModel: { provider: pin.provider, id: pin.id }, tier };
+      persistRouterState(ctx.cwd, currentRouterState);
+      return;
+    }
 
     if (!config.autoSwitch) {
       log(`Auto-switch disabled, using current model (tier: ${tier})`);

@@ -768,3 +768,6 @@ export async function resumeExpertsSession(sessionId: string): Promise<ExpertsSe
 export async function sendExpertMessage(content: string, to?: string, msgId?: string, sessionId?: string): Promise<void> {
   await invoke("send_expert_message", { content, to: to ?? null, msgId: msgId ?? null, sessionId: sessionId ?? null });
 }
+export async function abortExpertsSession(sessionId?: string): Promise<void> {
+  await invoke("abort_experts_session", { sessionId: sessionId ?? null });
+}

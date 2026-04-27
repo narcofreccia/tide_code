@@ -21,6 +21,27 @@ export function EditorTabs() {
     [closeTab],
   );
 
+  // Discard local edits and reload from disk for a tab whose file changed externally
+  // while it was dirty. Clears isDirty first so reloadTabsFromDisk applies disk content.
+  const handleReloadFromDisk = useCallback(
+    async (e: React.MouseEvent, path: string) => {
+      e.stopPropagation();
+      const store = useWorkspaceStore.getState();
+      store.openTabs.forEach((t) => {
+        if (t.path === path && t.isDirty) {
+          // Mark clean so reloadTabsFromDisk takes the disk version
+          useWorkspaceStore.setState((s) => ({
+            openTabs: s.openTabs.map((tab) =>
+              tab.path === path ? { ...tab, isDirty: false } : tab,
+            ),
+          }));
+        }
+      });
+      await store.reloadTabsFromDisk(path);
+    },
+    [],
+  );
+
   if (openTabs.length === 0) return null;
 
   return (
@@ -33,6 +54,15 @@ export function EditorTabs() {
         >
           {tab.path === SETTINGS_TAB_PATH && <GearIcon />}
           {tab.isDirty && <span className={styles.dirtyDot} />}
+          {tab.hasExternalChange && (
+            <button
+              className={styles.reloadBtn}
+              onClick={(e) => handleReloadFromDisk(e, tab.path)}
+              title="File changed on disk — click to discard local edits and reload"
+            >
+              ↻
+            </button>
+          )}
           <span className={styles.tabName}>{tab.name}</span>
           <button
             className={styles.closeBtn}

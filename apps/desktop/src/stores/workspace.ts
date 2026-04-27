@@ -16,6 +16,8 @@ export interface OpenTab {
   name: string;
   content: string;
   isDirty: boolean;
+  /** Set when an external (on-disk) change arrived while the tab was dirty. */
+  hasExternalChange?: boolean;
   language: string;
 }
 
@@ -106,7 +108,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   updateTabContent: (path, content) =>
     set((state) => ({
       openTabs: state.openTabs.map((t) =>
-        t.path === path ? { ...t, content, isDirty: true } : t,
+        t.path === path ? { ...t, content, isDirty: true, hasExternalChange: false } : t,
       ),
     })),
 
@@ -119,7 +121,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       await fsWriteFile(tab.path, tab.content);
       set((state) => ({
         openTabs: state.openTabs.map((t) =>
-          t.path === tab.path ? { ...t, isDirty: false } : t,
+          t.path === tab.path ? { ...t, isDirty: false, hasExternalChange: false } : t,
         ),
       }));
       showSuccess(`Saved ${tab.name}`);
@@ -173,25 +175,35 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   reloadTabsFromDisk: async (changedPath?: string) => {
     const { openTabs } = get();
-    // If a specific path is given, only reload matching tabs; otherwise reload all non-dirty tabs
-    const tabsToReload = changedPath
+    // If a specific path is given, only check matching tabs; otherwise check all tabs.
+    // Dirty tabs are flagged (hasExternalChange) instead of being silently skipped.
+    const tabsToCheck = changedPath
       ? openTabs.filter(
           (t) => t.path === changedPath || t.path.endsWith("/" + changedPath),
         )
-      : openTabs.filter((t) => !t.isDirty);
+      : openTabs;
 
-    for (const tab of tabsToReload) {
+    for (const tab of tabsToCheck) {
       try {
         const result = await invoke<{ content: string; totalLines: number; language: string }>(
           "fs_read_file",
           { path: tab.path },
         );
-        // Only update if content actually changed
-        if (result.content !== tab.content) {
+        if (result.content === tab.content) continue; // no real change
+
+        if (tab.isDirty) {
+          // Don't clobber unsaved edits — flag the tab so the UI can show "↻"
+          console.warn(`[workspace] External change to dirty tab: ${tab.path}`);
+          set((state) => ({
+            openTabs: state.openTabs.map((t) =>
+              t.path === tab.path ? { ...t, hasExternalChange: true } : t,
+            ),
+          }));
+        } else {
           set((state) => ({
             openTabs: state.openTabs.map((t) =>
               t.path === tab.path
-                ? { ...t, content: result.content, isDirty: false }
+                ? { ...t, content: result.content, isDirty: false, hasExternalChange: false }
                 : t,
             ),
           }));

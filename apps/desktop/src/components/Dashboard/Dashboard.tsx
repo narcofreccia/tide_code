@@ -60,7 +60,7 @@ export function Dashboard({ onOpenFolder, onOpenWorkspace }: DashboardProps) {
       <div style={s.inner}>
         {/* Hero */}
         <div style={s.hero}>
-          <h1 style={s.title}>Tide</h1>
+          <h1 style={s.title}>TideCode</h1>
           <p style={s.subtitle}>Agentic Coding Environment</p>
         </div>
 

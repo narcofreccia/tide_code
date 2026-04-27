@@ -34,7 +34,8 @@ import { useIndexStore } from "./stores/indexStore";
 import { initOrchestrationListener } from "./stores/orchestrationStore";
 import { initExpertsListener } from "./stores/expertsStore";
 import { listen } from "@tauri-apps/api/event";
-import { checkForUpdates } from "./lib/updater";
+import { useUpdaterStore } from "./stores/updaterStore";
+import { UpdateBanner } from "./components/UpdateBanner";
 import { Toasts } from "./components/Toasts";
 import { Dashboard, saveRecentWorkspace } from "./components/Dashboard/Dashboard";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -101,7 +102,7 @@ export function App() {
     initExpertsListener();
     usePermissionStore.getState().load();
     useSettingsStore.getState().load();
-    checkForUpdates();
+    useUpdaterStore.getState().triggerCheck();
 
     // Subscribe to all Pi events and forward to stream store
     const eventCleanup = onPiEvent((event) => {
@@ -138,12 +139,25 @@ export function App() {
       },
     );
 
+    // Auto-refresh open editor tabs when files change on disk (agent writes,
+    // git pull, external formatters, etc.). The watcher fires here; the workspace
+    // store's reloadTabsFromDisk handles dirty-tab safety internally.
+    const fileChangedCleanup = listen<{ path: string; kind: "changed" | "removed" }>(
+      "file_changed",
+      (event) => {
+        if (cancelled) return;
+        if (event.payload.kind === "removed") return; // ignore deletes for now
+        useWorkspaceStore.getState().reloadTabsFromDisk(event.payload.path);
+      },
+    );
+
     return () => {
       cancelled = true;
       eventCleanup.then((unlisten) => unlisten());
       readyCleanup.then((unlisten) => unlisten());
       indexProgressCleanup.then((unlisten) => unlisten());
       indexCompleteCleanup.then((unlisten) => unlisten());
+      fileChangedCleanup.then((unlisten) => unlisten());
     };
   }, [handlePiEvent, fetchPiState]);
 
@@ -385,6 +399,7 @@ export function App() {
     <div style={s.container}>
       <GlobalLoader />
       <AppBar />
+      <UpdateBanner />
 
       {/* Main content area */}
       <div style={s.main}>
@@ -482,7 +497,7 @@ export function App() {
 
       {/* Bottom status bar */}
       <div style={s.bottomBar}>
-        <span>Tide v0.1.0</span>
+        <span>TideCode v0.1.0</span>
         {rootPath && (
           <span style={s.rootPathLabel}>{rootPath.split("/").pop()}</span>
         )}

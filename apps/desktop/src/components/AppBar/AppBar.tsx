@@ -10,7 +10,7 @@ export function AppBar() {
   const rootPath = useWorkspaceStore((s) => s.rootPath);
   const status = useEngineStore((s) => s.status);
 
-  const folderName = rootPath ? rootPath.split("/").pop() : "Tide";
+  const folderName = rootPath ? rootPath.split("/").pop() : "TideCode";
 
   const statusColor =
     status === "connected"

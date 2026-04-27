@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegui-org/nicegui-compat/main/tauri-conf.schema.json",
-  "productName": "Tide",
+  "productName": "TideCode",
   "version": "0.1.0",
   "identifier": "dev.tide.ide",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Tide",
+        "title": "TideCode",
         "width": 1400,
         "height": 900,
         "resizable": true,
@@ -33,10 +33,10 @@
     "externalBin": [
       "binaries/pi-sidecar"
     ],
-    "resources": [
-      "resources/pi-extensions/*",
-      "resources/pi-assets/**/*"
-    ],
+    "resources": {
+      "resources/pi-extensions/*": "pi-extensions/",
+      "resources/pi-assets/": "pi-assets/"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

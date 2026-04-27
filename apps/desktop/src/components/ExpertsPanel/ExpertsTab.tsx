@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo, memo } from "react";
 import { useExpertsStore, initExpertsListener } from "../../stores/expertsStore";
 import { useSettingsStore } from "../../stores/settingsStore";
-import { startExpertsSession, resumeExpertsSession, sendExpertMessage, orchestrate, listExpertsSessions, getExpertsSessionMessages, getExpertsSession } from "../../lib/ipc";
+import { startExpertsSession, resumeExpertsSession, sendExpertMessage, abortExpertsSession, orchestrate, listExpertsSessions, getExpertsSessionMessages, getExpertsSession } from "../../lib/ipc";
 import type { ExpertsPhase } from "../../stores/expertsStore";
 import type { TeamConfig, ExpertMailboxMessage } from "../../lib/ipc";
 import { PhaseIndicator } from "./PhaseIndicator";
@@ -439,6 +439,22 @@ export function ExpertsTab() {
     }
   }, [activeSession, selectedTeam]);
 
+  const [stopping, setStopping] = useState(false);
+  const handlePanicStop = useCallback(async () => {
+    if (stopping) return;
+    setStopping(true);
+    try {
+      const sid = useExpertsStore.getState().activeSessionId ?? undefined;
+      await abortExpertsSession(sid);
+    } catch (err) {
+      console.error("[experts] Failed to abort session:", err);
+    } finally {
+      useExpertsStore.getState().reset();
+      try { await useExpertsStore.getState().loadPastSessions(); } catch { /* ignore */ }
+      setStopping(false);
+    }
+  }, [stopping]);
+
   const [executing, setExecuting] = useState(false);
 
   const handleExecuteViaOrchestrator = useCallback(async () => {
@@ -557,6 +573,16 @@ export function ExpertsTab() {
               <span style={s.timerBadge}>
                 {elapsed}{totalFormatted ? `/${totalFormatted}` : ""}
               </span>
+            )}
+            {isActive && (
+              <button
+                style={{ ...s.stopBtn, opacity: stopping ? 0.6 : 1 }}
+                onClick={handlePanicStop}
+                disabled={stopping}
+                title="Force-stop this brainstorming session"
+              >
+                {stopping ? "Stopping…" : "⊗ Stop"}
+              </button>
             )}
           </div>
           <PhaseIndicator />
@@ -1131,6 +1157,18 @@ const s: Record<string, React.CSSProperties> = {
     cursor: "pointer",
     padding: "3px 10px",
     borderRadius: "var(--radius-sm)",
+  },
+  stopBtn: {
+    fontFamily: "var(--font-ui)",
+    fontSize: "var(--font-size-xs)",
+    fontWeight: 600,
+    color: "#fff",
+    backgroundColor: "var(--error, #c0392b)",
+    border: "none",
+    cursor: "pointer",
+    padding: "3px 10px",
+    borderRadius: "var(--radius-sm)",
+    marginLeft: 4,
   },
   sessionTitle: {
     fontFamily: "var(--font-ui)",

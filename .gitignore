@@ -21,12 +21,8 @@ build.log
 .tide/
 _archive_engine/
 
-# Legacy sidecar scripts (replaced by build-sidecar.*)
-scripts/prepare-sidecar.*
-apps/desktop/scripts/
-scripts/build-release.sh
-scripts/build-sidecar.sh
-scripts/build-sidecar.ps1
+# Local-only build/release tooling — never pushed
+scripts/
 
 apps/desktop/src-tauri/resources/pi-extensions/*.js
 apps/desktop/src-tauri/resources/pi-sidecar/

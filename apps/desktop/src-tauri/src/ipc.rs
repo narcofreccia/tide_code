@@ -69,6 +69,12 @@ pub struct PiConnection {
     pub event_rx: Arc<Mutex<mpsc::UnboundedReceiver<Value>>>,
     /// Shared pending requests map for response correlation.
     pub pending: PendingRequests,
+    /// JoinHandle for the spawned `read_loop`. Dropping the connection drops
+    /// this handle, which causes tokio to abort the task at its next await
+    /// point — releasing the `ChildStdout` and its underlying OS fd before
+    /// any subsequent process spawn. Without this we used to drop the handle
+    /// on the floor, leaving the read task to detect EOF on its own schedule.
+    pub read_task: tokio::task::JoinHandle<()>,
 }
 
 impl PiConnection {
@@ -85,8 +91,9 @@ impl PiConnection {
         let (event_tx, event_rx) = mpsc::unbounded_channel::<Value>();
         let pending: PendingRequests = Arc::new(Mutex::new(HashMap::new()));
 
-        // Spawn stdout read loop
-        tokio::spawn(async move {
+        // Spawn stdout read loop and keep its JoinHandle so the connection
+        // can guarantee fd release on drop.
+        let read_task = tokio::spawn(async move {
             Self::read_loop(stdout, event_tx).await;
         });
 
@@ -94,6 +101,7 @@ impl PiConnection {
             writer,
             event_rx: Arc::new(Mutex::new(event_rx)),
             pending,
+            read_task,
         }
     }
 

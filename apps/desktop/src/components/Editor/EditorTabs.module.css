@@ -51,6 +51,28 @@
   flex-shrink: 0;
 }
 
+.reloadBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: none;
+  background: transparent;
+  color: var(--warning, #e0af68);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.reloadBtn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-bright);
+}
+
 .closeBtn {
   display: flex;
   align-items: center;

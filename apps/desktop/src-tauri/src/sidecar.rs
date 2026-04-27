@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
+use tokio::task::JoinHandle;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -253,7 +254,7 @@ fn glob_first(base_dir: &std::path::Path, pattern: &str) -> Result<String, Box<d
 pub async fn start_pi(
     workspace_root: &str,
     extensions: &[String],
-) -> Result<(PiConnection, Child), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(PiConnection, Child, JoinHandle<()>), Box<dyn std::error::Error + Send + Sync>> {
     let pi_path = resolve_pi_path()?;
     tracing::info!("Starting Pi: {} --mode rpc (cwd: {})", pi_path, workspace_root);
 
@@ -358,9 +359,11 @@ pub async fn start_pi(
     let stdout = child.stdout.take().ok_or("Failed to capture Pi stdout")?;
     let stderr = child.stderr.take().ok_or("Failed to capture Pi stderr")?;
 
-    // Log Pi's stderr in the background
+    // Log Pi's stderr in the background. Keep the JoinHandle so that on
+    // restart the caller can abort + await this task, releasing ChildStderr
+    // and its OS fd before the next posix_spawn.
     let stderr_reader = BufReader::new(stderr);
-    tokio::spawn(async move {
+    let stderr_task = tokio::spawn(async move {
         let mut lines = stderr_reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
             tracing::debug!("[pi:stderr] {}", line);
@@ -370,7 +373,7 @@ pub async fn start_pi(
     let conn = PiConnection::new(stdin, stdout);
 
     tracing::info!("Pi agent process started (pid: {:?})", child.id());
-    Ok((conn, child))
+    Ok((conn, child, stderr_task))
 }
 
 fn target_triple() -> &'static str {
@@ -387,16 +390,29 @@ fn target_triple() -> &'static str {
 }
 
  fn resolve_bundled_sidecar(base_dir: &std::path::Path) -> Option<PathBuf> {
-     let sidecar_name = format!("pi-sidecar-{}", target_triple());
-     let bundled = base_dir.join(&sidecar_name);
-     if bundled.exists() {
-         return Some(bundled);
+     // Tauri strips the target-triple suffix when bundling externalBin into
+     // the .app/.exe — the on-disk name is just "pi-sidecar". Try the base
+     // name first, then the triple-suffixed form (used by externalBin
+     // staging dirs, dev runs, and some Linux distros).
+     let candidates = [
+         base_dir.join("pi-sidecar"),
+         base_dir.join(format!("pi-sidecar-{}", target_triple())),
+     ];
+     for c in &candidates {
+         if c.exists() {
+             return Some(c.clone());
+         }
      }
      #[cfg(windows)]
      {
-         let bundled_exe = base_dir.join(format!("{}.exe", sidecar_name));
-         if bundled_exe.exists() {
-             return Some(bundled_exe);
+         let exe_candidates = [
+             base_dir.join("pi-sidecar.exe"),
+             base_dir.join(format!("pi-sidecar-{}.exe", target_triple())),
+         ];
+         for c in &exe_candidates {
+             if c.exists() {
+                 return Some(c.clone());
+             }
          }
      }
      None
@@ -405,7 +421,16 @@ fn target_triple() -> &'static str {
 /// Resolve the path to bundled Pi assets (resources/pi-assets/).
 /// Tauri places resources alongside the main exe on Windows, and in
 /// Contents/Resources/ on macOS. Returns None if not in a bundled context.
+///
+/// Requires `package.json` to exist inside the candidate directory — a bare
+/// directory (e.g. an empty `target/debug/resources/pi-assets/.gitkeep` stub
+/// created by Tauri's externalBin staging) is not sufficient and would cause
+/// the Bun-bundled sidecar to abort with ENOENT.
 fn resolve_pi_assets_dir() -> Option<String> {
+    fn has_assets(dir: &std::path::Path) -> bool {
+        dir.join("package.json").is_file()
+    }
+
     let exe = std::env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
 
@@ -414,18 +439,46 @@ fn resolve_pi_assets_dir() -> Option<String> {
         return None;
     }
 
-    // Windows/Linux: resources are alongside the exe
+    // Windows/Linux production: resources alongside the exe.
     let assets = exe_dir.join("resources").join("pi-assets");
-    if assets.exists() {
+    if has_assets(&assets) {
         return Some(assets.to_string_lossy().to_string());
     }
 
-    // macOS: resources are in Contents/Resources/
+    // macOS production: resources in Contents/Resources/.
     #[cfg(target_os = "macos")]
     {
-        let mac_assets = exe_dir.parent()?.join("Resources").join("pi-assets");
-        if mac_assets.exists() {
-            return Some(mac_assets.to_string_lossy().to_string());
+        if let Some(parent) = exe_dir.parent() {
+            let mac_assets = parent.join("Resources").join("pi-assets");
+            if has_assets(&mac_assets) {
+                return Some(mac_assets.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    // Dev fallback: `pnpm tauri dev` runs the binary from
+    // <repo>/apps/desktop/src-tauri/target/debug/, where Tauri's externalBin
+    // staging only mirrors the sidecar binary, not its resources. The real
+    // pi-assets live two levels up at src-tauri/resources/pi-assets/.
+    if let Some(src_tauri) = exe_dir.parent().and_then(|p| p.parent()) {
+        let dev_assets = src_tauri.join("resources").join("pi-assets");
+        if has_assets(&dev_assets) {
+            return Some(dev_assets.to_string_lossy().to_string());
+        }
+    }
+
+    // Last-ditch: cwd-relative lookup, useful when the binary is invoked
+    // from a non-standard location.
+    if let Ok(cwd) = std::env::current_dir() {
+        for rel in [
+            "resources/pi-assets",
+            "src-tauri/resources/pi-assets",
+            "apps/desktop/src-tauri/resources/pi-assets",
+        ] {
+            let p = cwd.join(rel);
+            if has_assets(&p) {
+                return Some(p.to_string_lossy().to_string());
+            }
         }
     }
 

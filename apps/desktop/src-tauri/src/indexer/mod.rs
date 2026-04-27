@@ -290,6 +290,7 @@ pub async fn index_workspace(
 pub async fn start_watcher(
     indexer: &IndexerState,
     workspace_root: &str,
+    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let root = PathBuf::from(workspace_root);
     let (tx, mut rx) = mpsc::unbounded_channel::<watcher::WatchEvent>();
@@ -335,24 +336,47 @@ pub async fn start_watcher(
                     };
 
                     for event in pending.drain(..) {
-                        match event {
+                        match &event {
                             watcher::WatchEvent::Changed(path) => {
-                                if let Err(e) = index_single_file(&conn, repo_id, &root, &path) {
-                                    tracing::warn!("Watcher: failed to index {}: {}", path.display(), e);
-                                } else {
-                                    tracing::debug!("Watcher: re-indexed {}", path.display());
+                                // Re-index source files (existing behavior)
+                                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                                if crate::indexer::parser::SupportedLanguage::from_extension(ext).is_some() {
+                                    if let Err(e) = index_single_file(&conn, repo_id, &root, path) {
+                                        tracing::warn!("Watcher: failed to index {}: {}", path.display(), e);
+                                    } else {
+                                        tracing::debug!("Watcher: re-indexed {}", path.display());
+                                    }
                                 }
+                                // Notify frontend so the open tab (if any) can refresh
+                                let _ = app_handle.emit(
+                                    "file_changed",
+                                    serde_json::json!({
+                                        "path": path.to_string_lossy(),
+                                        "kind": "changed",
+                                    }),
+                                );
                             }
                             watcher::WatchEvent::Removed(path) => {
-                                let rel_path = path
-                                    .strip_prefix(&root)
-                                    .map(|p| p.to_string_lossy().to_string())
-                                    .unwrap_or_default();
-                                let _ = conn.execute(
-                                    "DELETE FROM files WHERE repo_id = ?1 AND rel_path = ?2",
-                                    rusqlite::params![repo_id, &rel_path],
+                                // DB-side removal still scoped to source files
+                                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                                if crate::indexer::parser::SupportedLanguage::from_extension(ext).is_some() {
+                                    let rel_path = path
+                                        .strip_prefix(&root)
+                                        .map(|p| p.to_string_lossy().to_string())
+                                        .unwrap_or_default();
+                                    let _ = conn.execute(
+                                        "DELETE FROM files WHERE repo_id = ?1 AND rel_path = ?2",
+                                        rusqlite::params![repo_id, &rel_path],
+                                    );
+                                    tracing::debug!("Watcher: removed {}", rel_path);
+                                }
+                                let _ = app_handle.emit(
+                                    "file_changed",
+                                    serde_json::json!({
+                                        "path": path.to_string_lossy(),
+                                        "kind": "removed",
+                                    }),
                                 );
-                                tracing::debug!("Watcher: removed {}", rel_path);
                             }
                         }
                     }

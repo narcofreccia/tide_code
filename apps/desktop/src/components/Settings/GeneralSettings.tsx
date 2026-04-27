@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { installCli, getVersionInfo, type VersionInfo } from "../../lib/ipc";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { useUpdaterStore } from "../../stores/updaterStore";
 import { terminalThemes } from "../../lib/terminalThemes";
 import { appThemes } from "../../lib/appThemes";
 
@@ -9,6 +10,9 @@ export function GeneralSettings() {
   const [cliError, setCliError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
   const [versions, setVersions] = useState<VersionInfo | null>(null);
+  const updaterState = useUpdaterStore((s) => s.state);
+  const updaterError = useUpdaterStore((s) => s.errorMsg);
+  const updaterVersion = useUpdaterStore((s) => s.version);
   const appTheme = useSettingsStore((s) => s.appTheme);
   const setAppTheme = useSettingsStore((s) => s.setAppTheme);
   const terminalTheme = useSettingsStore((s) => s.terminalTheme);
@@ -19,6 +23,22 @@ export function GeneralSettings() {
   useEffect(() => {
     getVersionInfo().then(setVersions).catch(() => {});
   }, []);
+
+  const handleCheckUpdates = () => {
+    useUpdaterStore.getState().reset();
+  };
+
+  const updaterStatusText = (() => {
+    switch (updaterState) {
+      case "checking":  return "Checking…";
+      case "available": return `Update available: v${updaterVersion} — see banner`;
+      case "downloading": return "Downloading…";
+      case "ready":     return "Update downloaded — restart from banner to apply";
+      case "error":     return `Check failed: ${updaterError.split("\n")[0]}`;
+      case "idle":      return "Up to date";
+      default:          return "";
+    }
+  })();
 
   const handleInstallCli = async () => {
     setInstalling(true);
@@ -42,12 +62,22 @@ export function GeneralSettings() {
         <div style={s.section}>
           <h3 style={s.sectionTitle}>About</h3>
           <div style={s.versionRow}>
-            <span style={s.versionLabel}>Tide</span>
+            <span style={s.versionLabel}>TideCode</span>
             <code style={s.versionValue}>v{versions.tide}</code>
           </div>
           <div style={s.versionRow}>
             <span style={s.versionLabel}>Pi Agent</span>
             <code style={s.versionValue}>v{versions.pi}</code>
+          </div>
+          <div style={{ ...s.settingRow, borderBottom: "none", paddingTop: 12 }}>
+            <span style={s.settingLabel}>{updaterStatusText}</span>
+            <button
+              style={s.button}
+              onClick={handleCheckUpdates}
+              disabled={updaterState === "checking" || updaterState === "downloading"}
+            >
+              {updaterState === "checking" ? "Checking…" : "Check for updates"}
+            </button>
           </div>
         </div>
       )}

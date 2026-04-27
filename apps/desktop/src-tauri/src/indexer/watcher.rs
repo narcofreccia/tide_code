@@ -3,8 +3,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use crate::indexer::parser::SupportedLanguage;
-
 pub struct IndexWatcher {
     _watcher: RecommendedWatcher,
 }
@@ -25,12 +23,9 @@ impl IndexWatcher {
         let mut watcher = notify::recommended_watcher(move |result: Result<Event, _>| {
             if let Ok(event) = result {
                 for path in &event.paths {
-                    // Only care about supported file extensions
-                    let ext = path
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or("");
-                    if SupportedLanguage::from_extension(ext).is_none() {
+                    // Skip dir-only events; we only care about files (anything with
+                    // an extension is a good first-cut filter).
+                    if path.extension().is_none() {
                         continue;
                     }
 

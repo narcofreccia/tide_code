@@ -24,6 +24,14 @@ pub struct AppState {
     pub pi: Arc<Mutex<Option<PiConnection>>>,
     pub workspace_root: Arc<Mutex<Option<String>>>,
     pub _pi_child: Arc<Mutex<Option<tokio::process::Child>>>,
+    /// JoinHandle for the stderr-logger task spawned by `sidecar::start_pi`.
+    /// Aborted + awaited in `restart_pi` so ChildStderr's fd is released
+    /// before the next process spawn.
+    pub _pi_stderr_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// JoinHandle for the event-forwarder task spawned in `restart_pi` /
+    /// app setup. Aborted + awaited on restart so the event_rx Arc is
+    /// released cleanly.
+    pub _pi_event_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     pub indexer: Arc<Mutex<Option<indexer::IndexerState>>>,
     pub agent_end_notify: Arc<Notify>,
     pub pty_manager: StdMutex<pty::PtyManager>,
@@ -89,24 +97,77 @@ async fn abort_agent(
     Ok(())
 }
 
+/// Abort the JoinHandle in `slot` and wait up to 1s for the task to actually
+/// finish. Used by `restart_pi` to ensure the previous Pi's reader tasks have
+/// dropped their `ChildStdout` / `ChildStderr` (and the parent has released
+/// the underlying OS fds) before the next `posix_spawn`.
+async fn drain_pi_task(
+    slot: &Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    label: &str,
+) {
+    let task = slot.lock().await.take();
+    if let Some(t) = task {
+        t.abort();
+        match tokio::time::timeout(std::time::Duration::from_secs(1), t).await {
+            Ok(_) => tracing::info!("Pi {label} task terminated"),
+            Err(_) => tracing::warn!("Pi {label} task did not terminate within 1s"),
+        }
+    }
+}
+
 /// Restart Pi agent (e.g. after changing API keys).
 #[tauri::command]
 async fn restart_pi(
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    // Kill existing Pi process and wait for it to fully exit
+    // Tear down any existing Pi cleanly. Tolerant of an already-dead child:
+    // when Pi has already self-exited (crash, OOM, manual kill — common when
+    // the user clicks "Restart Agent" on a Pi that just died), kill() returns
+    // ESRCH and a blind wait() can race with whatever already reaped the pid.
     {
         let mut child_guard = state._pi_child.lock().await;
         if let Some(mut child) = child_guard.take() {
-            let _ = child.kill().await;
-            // Wait for process to be fully reaped so fds are released
-            let _ = child.wait().await;
-            tracing::info!("Killed existing Pi process");
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    // Even though the child is already exited, call wait() so
+                    // tokio marks the inner state fully-reaped. Otherwise the
+                    // kill_on_drop hook (set in sidecar::start_pi) fires an
+                    // async kill+wait task on drop, which can race the next
+                    // posix_spawn and surface as EBADF.
+                    let _ = child.wait().await;
+                    tracing::info!("Pi child was already exited ({status}); reaped without kill");
+                }
+                Ok(None) => {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    tracing::info!("Killed existing Pi process");
+                }
+                Err(e) => {
+                    tracing::warn!("try_wait on existing Pi failed: {e}; attempting kill anyway");
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                }
+            }
+            // Explicit drop so the dead child's stdio pipes (held by
+            // kill_on_drop logic) are released before we spawn a fresh one.
+            drop(child);
         }
         let mut pi = state.pi.lock().await;
         *pi = None;
     }
+
+    // Drain prior session's reader/forwarder tasks so they drop their owned
+    // ChildStdout / ChildStderr / event_rx Arc and release the OS fds before
+    // the next posix_spawn. PiConnection::read_task was dropped above when
+    // *pi = None, which auto-aborts via tokio's JoinHandle::Drop; the two
+    // separately-tracked tasks need explicit abort+await here.
+    drain_pi_task(&state._pi_stderr_task, "stderr").await;
+    drain_pi_task(&state._pi_event_task, "event-forwarder").await;
+
+    // Brief grace so any abort-driven drops actually run before we spawn.
+    tokio::task::yield_now().await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // Determine workspace root (fall back to cwd)
     let workspace = {
@@ -122,16 +183,41 @@ async fn restart_pi(
     let pi_state = state.pi.clone();
     let child_state = state._pi_child.clone();
 
-    match sidecar::start_pi(&workspace, &extensions).await {
-        Ok((conn, child)) => {
+    // Restart spawn with retries. The transient failures we've seen on macOS
+    // (EBADF / "Bad file descriptor") can persist longer than a single short
+    // grace window if the previous child's stdio pipes are still being torn
+    // down. Backoff schedule: initial attempt, then 150ms, 400ms, 1000ms.
+    // We retry on *any* spawn failure (not just EBADF) so a string-match
+    // mismatch can't silently disable the retry loop.
+    let backoffs = [150u64, 400, 1000];
+    let mut start_attempt = sidecar::start_pi(&workspace, &extensions).await;
+    for (i, delay_ms) in backoffs.iter().enumerate() {
+        let err_msg = match &start_attempt {
+            Ok(_) => break,
+            Err(e) => e.to_string(),
+        };
+        tracing::warn!(
+            "Pi spawn failed (attempt {}/{}): {}; retrying after {}ms",
+            i + 1,
+            backoffs.len() + 1,
+            err_msg,
+            delay_ms
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
+        start_attempt = sidecar::start_pi(&workspace, &extensions).await;
+    }
+
+    match start_attempt {
+        Ok((conn, child, stderr_task)) => {
             tracing::info!("Pi agent restarted successfully");
 
-            // Re-wire event forwarding
+            // Re-wire event forwarding; keep the JoinHandle so the next
+            // restart can abort + await it cleanly.
             let event_rx = conn.event_rx.clone();
             let pending = conn.pending.clone();
             let handle = app_handle.clone();
             let agent_notify = state.agent_end_notify.clone();
-            tokio::spawn(async move {
+            let event_task = tokio::spawn(async move {
                 let mut rx = event_rx.lock().await;
                 loop {
                     match rx.recv().await {
@@ -175,6 +261,8 @@ async fn restart_pi(
             *pi = Some(conn);
             let mut child_guard = child_state.lock().await;
             *child_guard = Some(child);
+            *state._pi_stderr_task.lock().await = Some(stderr_task);
+            *state._pi_event_task.lock().await = Some(event_task);
 
             // Notify frontend that Pi is ready
             let _ = app_handle.emit("pi_ready", ());
@@ -269,10 +357,32 @@ async fn set_pi_model(
 
     let cmd = serde_json::json!({
         "type": "set_model",
-        "provider": provider,
-        "modelId": model_id,
+        "provider": &provider,
+        "modelId": &model_id,
     });
     conn.send(&cmd).await.map_err(|e| e.to_string())?;
+    drop(pi_guard);
+
+    // Mark the user's manual pick so tide-router won't auto-switch off it.
+    // Orchestrator-initiated model changes go through `pi_handle.send` directly,
+    // not this command, so they won't clobber the pin.
+    let workspace = state.workspace_root.lock().await.clone();
+    if let Some(ws) = workspace {
+        let pin_path = std::path::PathBuf::from(&ws).join(".tide").join("user-pinned-model.json");
+        if let Some(parent) = pin_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let pinned_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let pin = serde_json::json!({
+            "provider": provider,
+            "id": model_id,
+            "pinnedAt": pinned_at,
+        });
+        let _ = std::fs::write(&pin_path, serde_json::to_string_pretty(&pin).unwrap_or_default());
+    }
     Ok(())
 }
 
@@ -1159,7 +1269,7 @@ async fn open_workspace(
                 }
 
                 // Start file watcher
-                if let Err(e) = indexer::start_watcher(&idx, &index_path).await {
+                if let Err(e) = indexer::start_watcher(&idx, &index_path, handle.clone()).await {
                     tracing::warn!("Failed to start index watcher: {}", e);
                 }
 
@@ -2505,6 +2615,8 @@ pub fn run() {
             pi: Arc::new(Mutex::new(None)),
             workspace_root: Arc::new(Mutex::new(None)),
             _pi_child: Arc::new(Mutex::new(None)),
+            _pi_stderr_task: Arc::new(Mutex::new(None)),
+            _pi_event_task: Arc::new(Mutex::new(None)),
             indexer: Arc::new(Mutex::new(None)),
             agent_end_notify: Arc::new(Notify::new()),
             pty_manager: StdMutex::new(pty::PtyManager::new()),
@@ -2517,6 +2629,8 @@ pub fn run() {
         .setup(|app| {
             let pi_state = app.state::<AppState>().inner().pi.clone();
             let child_state = app.state::<AppState>().inner()._pi_child.clone();
+            let stderr_task_slot = app.state::<AppState>().inner()._pi_stderr_task.clone();
+            let event_task_slot = app.state::<AppState>().inner()._pi_event_task.clone();
             let agent_end_notify = app.state::<AppState>().inner().agent_end_notify.clone();
             let app_handle = app.handle().clone();
 
@@ -2530,7 +2644,7 @@ pub fn run() {
                     .unwrap_or_else(|_| ".".to_string());
 
                 match sidecar::start_pi(&initial_cwd, &extensions).await {
-                    Ok((conn, child)) => {
+                    Ok((conn, child, stderr_task)) => {
                         tracing::info!("Pi agent started successfully");
 
                         // Background task: read Pi events, emit to React
@@ -2538,7 +2652,7 @@ pub fn run() {
                         let pending = conn.pending.clone();
                         let handle = app_handle.clone();
                         let agent_notify = agent_end_notify.clone();
-                        tokio::spawn(async move {
+                        let event_task = tokio::spawn(async move {
                             let mut rx = event_rx.lock().await;
                             loop {
                                 match rx.recv().await {
@@ -2595,6 +2709,8 @@ pub fn run() {
                         *pi = Some(conn);
                         let mut child_guard = child_state.lock().await;
                         *child_guard = Some(child);
+                        *stderr_task_slot.lock().await = Some(stderr_task);
+                        *event_task_slot.lock().await = Some(event_task);
 
                         // Notify frontend that Pi is ready
                         let _ = app_handle.emit("pi_ready", ());
@@ -2708,6 +2824,7 @@ pub fn run() {
             experts::get_experts_session_messages,
             experts::get_experts_session_findings,
             experts::delete_experts_session,
+            experts::abort_experts_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tide");

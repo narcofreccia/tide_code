@@ -1053,7 +1053,7 @@ const ChatBubble = React.memo(function ChatBubble({ message, userMessageIndex = 
       return (
         <div className={css.messageEnter} style={s.assistantRow}>
           <div style={s.roleLabel}>
-            <span style={{ color: "var(--accent)" }}>Tide</span>
+            <span style={{ color: "var(--accent)" }}>TideCode</span>
             {message.modelName && (
               <span style={s.modelBadge}>{message.modelName}</span>
             )}
