@@ -1,24 +1,63 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
-import { openFileByPath } from "../../lib/fileHelpers";
+import { openFileByPath, openFileAtLine } from "../../lib/fileHelpers";
+
+// Lazily-loaded Mermaid renderer (keeps the heavy lib out of the main bundle). Parses
+// once per code change; on any error falls back to the raw code block.
+const MermaidDiagram = React.memo(function MermaidDiagram({ code }: { code: string }) {
+  const [svg, setSvg] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const id = React.useId().replace(/[^a-zA-Z0-9]/g, "");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const mermaid = (await import("mermaid")).default;
+        mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" });
+        const { svg } = await mermaid.render(`tide-mmd-${id}`, code);
+        if (!cancelled) setSvg(svg);
+      } catch {
+        if (!cancelled) setFailed(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [code, id]);
+
+  if (failed) return <pre style={s.pre}><code>{code}</code></pre>;
+  if (!svg) return <div style={{ ...s.pre, opacity: 0.6 }}>Rendering diagram…</div>;
+  return <div style={{ display: "flex", justifyContent: "center", padding: "8px 0" }} dangerouslySetInnerHTML={{ __html: svg }} />;
+});
 
 const FILE_EXTENSIONS = /\.(tsx?|jsx?|rs|json|md|css|html|py|go|toml|yaml|yml|sh|sql|lock|cfg|ini|env|xml|svg)$/;
-function isFilePath(text: string): boolean {
-  if (FILE_EXTENSIONS.test(text)) return true;
-  if (/^(src|apps|\.\.?)\//i.test(text)) return true;
-  return false;
+/**
+ * Parse a code reference in backticks. Accepts a bare path (`src/app.ts`) or a path with
+ * a line / line-range suffix (`sidecar.rs:254`, `src/app.ts:10-20`). Returns null if the
+ * text doesn't look like a workspace file reference.
+ */
+function parseFileRef(text: string): { path: string; line?: number } | null {
+  const m = text.match(/^(.+?):(\d+)(?:-\d+)?$/);
+  const pathPart = m ? m[1] : text;
+  const line = m ? parseInt(m[2], 10) : undefined;
+  if (FILE_EXTENSIONS.test(pathPart) || /^(src|apps|\.\.?)\//i.test(pathPart)) {
+    return { path: pathPart, line };
+  }
+  return null;
 }
 
-function FileLink({ children, text }: { children: React.ReactNode; text: string }) {
+function FileLink({ children, path, line }: { children: React.ReactNode; path: string; line?: number }) {
   const [hovered, setHovered] = useState(false);
-  const handleClick = useCallback(() => openFileByPath(text), [text]);
+  const handleClick = useCallback(() => {
+    if (line) openFileAtLine(path, line);
+    else openFileByPath(path);
+  }, [path, line]);
   return (
     <code
       style={{ ...s.inlineCode, ...s.fileLink, ...(hovered ? s.fileLinkHover : {}) }}
       onClick={handleClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      title={`Open ${text}`}
+      title={line ? `Open ${path} at line ${line}` : `Open ${path}`}
     >
       {children}
     </code>
@@ -50,6 +89,9 @@ const markdownComponents: React.ComponentProps<typeof ReactMarkdown>["components
     const isBlock = className?.startsWith("language-");
     if (isBlock) {
       const codeText = String(children).replace(/\n$/, "");
+      if (className === "language-mermaid") {
+        return <MermaidDiagram code={codeText} />;
+      }
       return (
         <div style={s.codeBlock}>
           <div style={s.codeHeader}>
@@ -63,8 +105,9 @@ const markdownComponents: React.ComponentProps<typeof ReactMarkdown>["components
       );
     }
     const text = String(children).trim();
-    if (isFilePath(text)) {
-      return <FileLink text={text}>{children}</FileLink>;
+    const ref = parseFileRef(text);
+    if (ref) {
+      return <FileLink path={ref.path} line={ref.line}>{children}</FileLink>;
     }
     return <code style={s.inlineCode} {...props}>{children}</code>;
   },
@@ -75,13 +118,13 @@ const markdownComponents: React.ComponentProps<typeof ReactMarkdown>["components
     return <p style={s.paragraph}>{children}</p>;
   },
   h1({ children }) {
-    return <h1 style={s.heading}>{children}</h1>;
+    return <h1 style={{ ...s.heading, fontSize: 22, lineHeight: 1.25 }}>{children}</h1>;
   },
   h2({ children }) {
-    return <h2 style={s.heading}>{children}</h2>;
+    return <h2 style={{ ...s.heading, fontSize: 17, lineHeight: 1.3 }}>{children}</h2>;
   },
   h3({ children }) {
-    return <h3 style={s.heading}>{children}</h3>;
+    return <h3 style={{ ...s.heading, fontSize: 14, lineHeight: 1.35 }}>{children}</h3>;
   },
   ul({ children }) {
     return <ul style={s.list}>{children}</ul>;

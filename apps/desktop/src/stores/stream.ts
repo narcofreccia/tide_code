@@ -705,9 +705,11 @@ export const useStreamStore = create<StreamState>((set, get) => ({
                   sessionStatus: "active",
                   sessionId: e.data?.sessionId || e.data?.sessionPath || "",
                 });
-                // Reset context indicator for new session
-                useContextStore.setState({ warningDismissedAt: 0 });
-                useContextStore.getState().refreshFromSnapshot();
+                // Reset context indicator for new session. Clear immediately (don't show the
+                // previous conversation's usage), then refresh once the extension has written a
+                // fresh baseline snapshot on session_start (avoids reading the stale file).
+                useContextStore.getState().resetForNewSession();
+                setTimeout(() => useContextStore.getState().refreshFromSnapshot(), 400);
                 getSessionStats().catch(() => {});
               }
             }
@@ -730,13 +732,13 @@ export const useStreamStore = create<StreamState>((set, get) => ({
               // Re-fetch messages, stats, and context snapshot for the switched session
               getMessages().catch(() => {});
               getSessionStats().catch(() => {});
-              // Refresh context from snapshot after a brief delay for the extension to update
+              // Clear the previous session's usage immediately, then refresh once the extension
+              // has written a fresh snapshot for the switched-to session on session_start.
+              useContextStore.getState().resetForNewSession();
               setTimeout(() => {
                 getPiState().catch(() => {});
                 useContextStore.getState().refreshFromSnapshot();
-              }, 300);
-              // Reset warning state for new session
-              useContextStore.setState({ warningDismissedAt: 0 });
+              }, 400);
             }
             break;
           }

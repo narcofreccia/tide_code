@@ -13,7 +13,7 @@ import { applyAppTheme, saveAppTheme, loadAppTheme, defaultAppTheme } from "../l
 
 export const SETTINGS_TAB_PATH = "__settings__";
 
-export type SettingsSection = "general" | "providers" | "routing" | "orchestration" | "experts" | "safety" | "skills" | "shortcuts";
+export type SettingsSection = "general" | "providers" | "routing" | "orchestration" | "experts" | "tutor" | "safety" | "skills" | "shortcuts";
 
 export interface TierModelConfig {
   provider: string;

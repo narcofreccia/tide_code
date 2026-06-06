@@ -2,6 +2,8 @@ import { useRef, useCallback, useState, useEffect } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
 import { useRegionTags } from "./useRegionTags";
+import { useTutorStore } from "../../stores/tutorStore";
+import { useWorkspaceStore } from "../../stores/workspace";
 
 interface MonacoEditorProps {
   content: string;
@@ -9,6 +11,17 @@ interface MonacoEditorProps {
   path: string;
   readOnly?: boolean;
   onChange?: (value: string) => void;
+  /** When set, reveal + briefly highlight this 1-based line (e.g. from a lesson code ref). */
+  revealLine?: number;
+}
+
+// Injected once: the transient highlight applied when jumping to a line.
+if (typeof document !== "undefined" && !document.getElementById("tide-reveal-line-kf")) {
+  const style = document.createElement("style");
+  style.id = "tide-reveal-line-kf";
+  style.textContent =
+    ".tide-reveal-line{background:rgba(122,162,247,0.18);transition:background 1.5s ease-out;}";
+  document.head.appendChild(style);
 }
 
 export function MonacoEditor({
@@ -17,11 +30,34 @@ export function MonacoEditor({
   path,
   readOnly = false,
   onChange,
+  revealLine,
 }: MonacoEditorProps) {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const [editorReady, setEditorReady] = useState<editor.IStandaloneCodeEditor | null>(null);
   const isExternalUpdate = useRef(false);
+  const decorationsRef = useRef<string[]>([]);
+  // The editor instance persists across files, so read the current path from a ref.
+  const pathRef = useRef(path);
+  pathRef.current = path;
   useRegionTags(editorReady, path);
+
+  // Reveal + transiently highlight a target line when one is requested.
+  useEffect(() => {
+    const ed = editorReady;
+    if (!ed || !revealLine || revealLine < 1) return;
+    ed.revealLineInCenter(revealLine);
+    ed.setPosition({ lineNumber: revealLine, column: 1 });
+    decorationsRef.current = ed.deltaDecorations(decorationsRef.current, [
+      {
+        range: { startLineNumber: revealLine, startColumn: 1, endLineNumber: revealLine, endColumn: 1 },
+        options: { isWholeLine: true, className: "tide-reveal-line" },
+      },
+    ]);
+    const t = setTimeout(() => {
+      decorationsRef.current = ed.deltaDecorations(decorationsRef.current, []);
+    }, 1800);
+    return () => clearTimeout(t);
+  }, [editorReady, revealLine, path]);
 
   // Sync editor content when file is reloaded from disk (e.g. after agent changes)
   useEffect(() => {
@@ -90,6 +126,25 @@ export function MonacoEditor({
       },
     });
     monaco.editor.setTheme("tide-dark");
+
+    // Right-click → "Ask the tutor about this": send the selection to the Learn panel.
+    editor.addAction({
+      id: "tide.tutor.explainSelection",
+      label: "Ask the tutor about this",
+      contextMenuGroupId: "navigation",
+      contextMenuOrder: 1.5,
+      run: (ed) => {
+        const sel = ed.getSelection();
+        const model = ed.getModel();
+        if (!sel || !model) return;
+        const code = model.getValueInRange(sel);
+        if (!code.trim()) return;
+        const full = pathRef.current;
+        const root = useWorkspaceStore.getState().rootPath;
+        const rel = root && full.startsWith(root) ? full.slice(root.length).replace(/^\//, "") : full;
+        void useTutorStore.getState().explainSelection(rel, sel.startLineNumber, sel.endLineNumber, code);
+      },
+    });
 
     editor.focus();
   }, []);

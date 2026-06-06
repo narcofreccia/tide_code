@@ -304,6 +304,112 @@ export async function detectOllama(baseUrl?: string): Promise<string[]> {
   return invoke<string[]>("detect_ollama", { baseUrl: baseUrl ?? null });
 }
 
+// ── Codebase Tutor ─────────────────────────────────────────
+
+export interface TutorLessonTarget {
+  path: string;
+  startLine?: number;
+  endLine?: number;
+  symbolId?: string;
+}
+export interface TutorLessonRef {
+  id: string;
+  title: string;
+  summary: string;
+  targets?: TutorLessonTarget[];
+  prerequisites?: string[];
+}
+export interface TutorChapter {
+  id: string;
+  title: string;
+  summary: string;
+  lessons: TutorLessonRef[];
+}
+export interface TutorCurriculum {
+  title: string;
+  techStack: string[];
+  chapters: TutorChapter[];
+  /** Language the course is authored in (e.g. "en", "it"). */
+  language?: string;
+  generatedAt: string;
+}
+export interface TutorProgress {
+  lessonsCompleted: Record<string, { completedAt: string; score?: number; total?: number }>;
+  currentLessonId?: string | null;
+}
+export interface TutorModelRef { provider: string; id: string; name: string }
+export interface TutorConfig {
+  difficulty: "beginner" | "intermediate" | "advanced";
+  includeCritique: boolean;
+  language: string;
+  voiceEnabled: boolean;
+  /** Global default tutor model. */
+  model?: TutorModelRef | null;
+  /** Per-role model overrides (fall back to `model`, then router subagent, then pi default). */
+  models?: { curriculum?: TutorModelRef | null; lesson?: TutorModelRef | null; answer?: TutorModelRef | null };
+  customInstructions?: string;
+  depth?: "concise" | "balanced" | "deep";
+  length?: "short" | "standard" | "long";
+  /** Voice mode (Phase 2). */
+  autoSpeak?: boolean;
+  voiceName?: string;
+  sttModel?: string;
+  ttsEngine?: "kokoro" | "system";
+}
+export type TutorRole = "curriculum" | "lesson" | "answer";
+export interface TutorQuizQuestion {
+  question: string;
+  options: string[];
+  answerIndex: number;
+  explanation?: string;
+}
+
+/** Start deep analysis → builds .tide/tutor/curriculum.json (streams tutor_event). */
+export async function tutorBuildCurriculum(language?: string): Promise<void> {
+  await invoke("tutor_build_curriculum", { language: language ?? null });
+}
+/** Ensure a lesson is authored; emits lesson_ready when ready (cached or freshly written). */
+export async function requestTutorLesson(lessonId: string): Promise<void> {
+  await invoke("request_tutor_lesson", { lessonId });
+}
+/** Ask the tutor a free-form question; the answer arrives via a tutor_event. */
+export async function tutorAsk(lessonId: string | null, question: string): Promise<void> {
+  await invoke("tutor_ask", { lessonId, question });
+}
+export async function readTutorCurriculum(): Promise<TutorCurriculum | null> {
+  return invoke<TutorCurriculum | null>("read_tutor_curriculum");
+}
+export async function readTutorLesson(lessonId: string): Promise<string | null> {
+  return invoke<string | null>("read_tutor_lesson", { lessonId });
+}
+export async function readTutorQuiz(lessonId: string): Promise<TutorQuizQuestion[] | null> {
+  return invoke<TutorQuizQuestion[] | null>("read_tutor_quiz", { lessonId });
+}
+/** Cancel any in-flight tutor run. */
+export async function tutorCancel(): Promise<void> {
+  await invoke("tutor_cancel");
+}
+/** Regenerate a lesson from scratch, optionally with a tweak note. */
+export async function regenerateTutorLesson(lessonId: string, note?: string): Promise<void> {
+  await invoke("regenerate_tutor_lesson", { lessonId, note: note ?? null });
+}
+/** Overwrite the curriculum (after sidebar edits). */
+export async function writeTutorCurriculum(curriculum: TutorCurriculum): Promise<void> {
+  await invoke("write_tutor_curriculum", { curriculum });
+}
+export async function readTutorProgress(): Promise<TutorProgress> {
+  return invoke<TutorProgress>("read_tutor_progress");
+}
+export async function writeTutorProgress(progress: TutorProgress): Promise<void> {
+  await invoke("write_tutor_progress", { progress });
+}
+export async function readTutorConfig(): Promise<TutorConfig> {
+  return invoke<TutorConfig>("read_tutor_config");
+}
+export async function writeTutorConfig(config: TutorConfig): Promise<void> {
+  await invoke("write_tutor_config", { config });
+}
+
 // ── Pi Agent: Context Management ───────────────────────────
 
 /** Compact the Pi conversation context. */

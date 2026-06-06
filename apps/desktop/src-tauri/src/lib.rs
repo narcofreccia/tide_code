@@ -7,6 +7,7 @@ mod sidecar;
 mod experts;
 mod orchestrator;
 mod pty;
+mod tutor;
 
 use ipc::PiConnection;
 use std::sync::Arc;
@@ -40,6 +41,9 @@ pub struct AppState {
     pub orc_plan_confirm: Arc<Notify>,
     pub experts_watcher: Arc<Mutex<Option<notify::RecommendedWatcher>>>,
     pub experts_session_dir: Arc<Mutex<Option<String>>>,
+    pub tutor_watcher: Arc<Mutex<Option<notify::RecommendedWatcher>>>,
+    /// The isolated one-shot pi process powering the Codebase Tutor (own context window).
+    pub tutor_child: Arc<Mutex<Option<tokio::process::Child>>>,
 }
 
 // ── Pi Agent Commands ───────────────────────────────────────
@@ -2251,14 +2255,19 @@ async fn git_changed_files(
 // ── App Setup ───────────────────────────────────────────────
 
 fn resolve_extension_paths() -> Vec<String> {
-    let mut paths = Vec::new();
-
-    // Extension base names (without file extension)
-    let ext_names = [
+    // The main session deliberately does NOT load tide-tutor — the tutor runs in its
+    // own isolated process (see tutor.rs) so it never touches the main chat/context.
+    resolve_named_extension_paths(&[
         "tide-safety", "tide-project", "tide-session", "tide-router",
         "tide-context", "tide-planner", "tide-index", "tide-web-search", "tide-auth",
         "tide-subagent", "tide-experts",
-    ];
+    ])
+}
+
+/// Resolve absolute paths for the named extensions (prod `Resources/pi-extensions/*.js`,
+/// else dev `pi-extensions/*.ts`). Used by both the main session and the isolated tutor.
+pub(crate) fn resolve_named_extension_paths(ext_names: &[&str]) -> Vec<String> {
+    let mut paths = Vec::new();
 
     // Helper: canonicalize and strip \\?\ UNC prefix on Windows
     let clean_canonicalize = |p: &std::path::Path| -> Option<String> {
@@ -2275,7 +2284,7 @@ fn resolve_extension_paths() -> Vec<String> {
         if let Some(app_dir) = exe.parent() {
             let resources = app_dir.join("../Resources/pi-extensions");
             if resources.is_dir() {
-                for name in &ext_names {
+                for name in ext_names {
                     let p = resources.join(format!("{}.js", name));
                     if p.exists() {
                         if let Some(abs) = clean_canonicalize(&p) {
@@ -2300,7 +2309,7 @@ fn resolve_extension_paths() -> Vec<String> {
     }
 
     for dir in &search_dirs {
-        for name in &ext_names {
+        for name in ext_names {
             let p = dir.join(format!("{}.ts", name));
             if p.exists() {
                 if let Some(abs) = clean_canonicalize(&p) {
@@ -2773,6 +2782,8 @@ pub fn run() {
             orc_plan_confirm: Arc::new(Notify::new()),
             experts_watcher: Arc::new(Mutex::new(None)),
             experts_session_dir: Arc::new(Mutex::new(None)),
+            tutor_watcher: Arc::new(Mutex::new(None)),
+            tutor_child: Arc::new(Mutex::new(None)),
         })
         .setup(|app| {
             let pi_state = app.state::<AppState>().inner().pi.clone();
@@ -2977,6 +2988,19 @@ pub fn run() {
             experts::get_experts_session_findings,
             experts::delete_experts_session,
             experts::abort_experts_session,
+            tutor::tutor_build_curriculum,
+            tutor::request_tutor_lesson,
+            tutor::tutor_ask,
+            tutor::read_tutor_curriculum,
+            tutor::read_tutor_lesson,
+            tutor::read_tutor_quiz,
+            tutor::read_tutor_progress,
+            tutor::write_tutor_progress,
+            tutor::read_tutor_config,
+            tutor::write_tutor_config,
+            tutor::regenerate_tutor_lesson,
+            tutor::write_tutor_curriculum,
+            tutor::tutor_cancel,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tide");

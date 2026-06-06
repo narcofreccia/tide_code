@@ -7,6 +7,7 @@ import { KeyboardShortcuts } from "./KeyboardShortcuts";
 import { RoutingSettings } from "./RoutingSettings";
 import { OrchestratorSettings } from "./OrchestratorSettings";
 import { ExpertsSettings } from "./ExpertsSettings";
+import { TutorSettings } from "./TutorSettings";
 
 const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "general", label: "General" },
@@ -14,6 +15,7 @@ const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "routing", label: "Routing" },
   { id: "orchestration", label: "Orchestration" },
   { id: "experts", label: "Experts" },
+  { id: "tutor", label: "Tutor" },
   { id: "safety", label: "Safety" },
   { id: "skills", label: "Skills" },
   { id: "shortcuts", label: "Shortcuts" },
@@ -48,6 +50,7 @@ export function SettingsPanel() {
         {activeSection === "routing" && <RoutingSettings />}
         {activeSection === "orchestration" && <OrchestratorSettings />}
         {activeSection === "experts" && <ExpertsSettings />}
+        {activeSection === "tutor" && <TutorSettings />}
         {activeSection === "safety" && <SafetyPlaceholder />}
         {activeSection === "skills" && <SkillsPlaceholder />}
         {activeSection === "shortcuts" && <KeyboardShortcuts />}

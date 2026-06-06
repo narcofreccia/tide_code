@@ -57,6 +57,7 @@ interface ContextState {
   autoCompactThreshold: number;
 
   refreshFromSnapshot: () => Promise<void>;
+  resetForNewSession: () => void;
   updateBudget: (budgetTokens: number) => void;
   refreshItems: () => Promise<void>;
   togglePin: (id: string) => Promise<void>;
@@ -118,6 +119,25 @@ export const useContextStore = create<ContextState>((set, get) => ({
     } catch {
       // Snapshot not available yet
     }
+  },
+
+  resetForNewSession: () => {
+    // A new/switched session starts fresh. Clear the inherited token count immediately so
+    // the dial doesn't keep showing the PREVIOUS conversation's usage (the snapshot file is
+    // only rewritten once pi builds context for the first message). Keep the known budget.
+    const budgetTokens = get().breakdown?.budgetTokens ?? 0;
+    set({
+      breakdown: {
+        totalTokens: 0,
+        budgetTokens,
+        usagePercent: 0,
+        thresholdColor: computeThreshold(0),
+        categories: [],
+      },
+      preCompactTokens: null,
+      postCompactTokens: null,
+      warningDismissedAt: 0,
+    });
   },
 
   updateBudget: (budgetTokens: number) => {

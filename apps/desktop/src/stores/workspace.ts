@@ -19,6 +19,8 @@ export interface OpenTab {
   /** Set when an external (on-disk) change arrived while the tab was dirty. */
   hasExternalChange?: boolean;
   language: string;
+  /** One-shot: when set, the editor reveals + highlights this 1-based line on open. */
+  revealLine?: number;
 }
 
 interface WorkspaceState {
@@ -84,6 +86,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     set((state) => {
       const existing = state.openTabs.find((t) => t.path === tab.path);
       if (existing) {
+        // Already open — focus it, and carry over a new reveal target if provided so
+        // re-clicking a code reference re-jumps to the line.
+        if (tab.revealLine !== undefined) {
+          return {
+            activeTabPath: tab.path,
+            openTabs: state.openTabs.map((t) =>
+              t.path === tab.path ? { ...t, revealLine: tab.revealLine } : t,
+            ),
+          };
+        }
         return { activeTabPath: tab.path };
       }
       return {

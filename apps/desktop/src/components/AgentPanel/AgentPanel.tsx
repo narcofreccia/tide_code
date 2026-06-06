@@ -1012,8 +1012,19 @@ const StreamingMessageRenderer = React.memo(function StreamingMessageRenderer({ 
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
   }, [content]);
 
-  return <MessageRenderer content={rendered} />;
+  // While streaming, render as PLAIN TEXT — never re-parse markdown on the growing string
+  // (that full re-parse every ~50ms is what froze the UI on large responses). The bubble
+  // switches to the markdown <MessageRenderer> once the message finalizes (streaming=false).
+  return <div style={streamingPlainTextStyle}>{rendered}</div>;
 });
+
+const streamingPlainTextStyle: React.CSSProperties = {
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-word",
+  fontFamily: "var(--font-ui)",
+  fontSize: "var(--font-size-sm)",
+  lineHeight: 1.6,
+};
 
 // ── Copy button for messages ────────────────────────────────
 

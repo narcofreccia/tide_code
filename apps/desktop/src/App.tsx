@@ -23,6 +23,8 @@ import { ApprovalDialog } from "./components/Approval/ApprovalDialog";
 import { CommandPalette } from "./components/CommandPalette/CommandPalette";
 import { SettingsPanel } from "./components/Settings/SettingsModal";
 import { SETTINGS_TAB_PATH } from "./stores/settingsStore";
+import { LearnPanel } from "./components/Learn/LearnPanel";
+import { LEARN_TAB_PATH, openLearnTab } from "./stores/tutorStore";
 import { AppBar } from "./components/AppBar/AppBar";
 import { SearchPanel } from "./components/SearchPanel/SearchPanel";
 import { TerminalPanel } from "./components/Terminal/TerminalPanel";
@@ -33,6 +35,7 @@ import { usePermissionStore } from "./stores/permissionStore";
 import { useIndexStore } from "./stores/indexStore";
 import { initOrchestrationListener } from "./stores/orchestrationStore";
 import { initExpertsListener } from "./stores/expertsStore";
+import { initTutorListener } from "./stores/tutorStore";
 import { listen } from "@tauri-apps/api/event";
 import { useUpdaterStore } from "./stores/updaterStore";
 import { UpdateBanner } from "./components/UpdateBanner";
@@ -100,6 +103,7 @@ export function App() {
     initApprovalListener();
     initOrchestrationListener();
     initExpertsListener();
+    initTutorListener();
     usePermissionStore.getState().load();
     useSettingsStore.getState().load();
     useUpdaterStore.getState().triggerCheck();
@@ -362,6 +366,7 @@ export function App() {
   const activeTab = openTabs.find((t) => t.path === activeTabPath);
 
   const isSettingsActive = activeTabPath === SETTINGS_TAB_PATH;
+  const isLearnActive = activeTabPath === LEARN_TAB_PATH;
 
   const editorContent = (
     <div style={s.editorArea}>
@@ -369,12 +374,15 @@ export function App() {
       <div style={s.editorContent}>
         {isSettingsActive ? (
           <SettingsPanel />
+        ) : isLearnActive ? (
+          <LearnPanel />
         ) : activeTab ? (
           <MonacoEditor
             content={activeTab.content}
             language={activeTab.language}
             path={activeTab.path}
             readOnly={false}
+            revealLine={activeTab.revealLine}
             onChange={(value) => updateTabContent(activeTab.path, value)}
           />
         ) : (
@@ -432,6 +440,17 @@ export function App() {
                         <path d="M10.5 10.5L14 14" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
                       </svg>
                     </button>
+                    <button
+                      style={{ ...s.iconRailBtn, ...(isLearnActive ? s.iconRailBtnActive : {}) }}
+                      onClick={() => openLearnTab()}
+                      title="Learn this codebase"
+                    >
+                      {/* graduation cap */}
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <path d="M8 2L15 5.5L8 9L1 5.5L8 2z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+                        <path d="M4 7v3.5c0 .8 1.8 1.5 4 1.5s4-.7 4-1.5V7" stroke="currentColor" strokeWidth="1.2" />
+                      </svg>
+                    </button>
                   </div>
                   {/* Panel content */}
                   <div style={s.sidebarContent}>
@@ -456,18 +475,27 @@ export function App() {
                 </div>
               </div>
 
-              {/* Editor + Terminal + Agent Panel */}
+              {/* Editor + Terminal + Agent Panel. The Learn panel is standalone — it has its
+                  own curriculum/lesson/chat columns, so hide the main Agent Panel when active. */}
+              {isLearnActive ? (
+                <ErrorBoundary fallbackLabel="Learn">{editorWithTerminal}</ErrorBoundary>
+              ) : (
+                <SplitPane direction="vertical" initialSize={350} minSize={250} maxSize={600} side="end">
+                  <ErrorBoundary fallbackLabel="Editor">{editorWithTerminal}</ErrorBoundary>
+                  <ErrorBoundary fallbackLabel="Agent Panel"><AgentPanel /></ErrorBoundary>
+                </SplitPane>
+              )}
+            </SplitPane>
+          ) : (
+            /* Editor + Terminal | Agent Panel (no file tree) */
+            isLearnActive ? (
+              <ErrorBoundary fallbackLabel="Learn">{editorWithTerminal}</ErrorBoundary>
+            ) : (
               <SplitPane direction="vertical" initialSize={350} minSize={250} maxSize={600} side="end">
                 <ErrorBoundary fallbackLabel="Editor">{editorWithTerminal}</ErrorBoundary>
                 <ErrorBoundary fallbackLabel="Agent Panel"><AgentPanel /></ErrorBoundary>
               </SplitPane>
-            </SplitPane>
-          ) : (
-            /* Editor + Terminal | Agent Panel (no file tree) */
-            <SplitPane direction="vertical" initialSize={350} minSize={250} maxSize={600} side="end">
-              <ErrorBoundary fallbackLabel="Editor">{editorWithTerminal}</ErrorBoundary>
-              <ErrorBoundary fallbackLabel="Agent Panel"><AgentPanel /></ErrorBoundary>
-            </SplitPane>
+            )
           )
         ) : (
           <Dashboard

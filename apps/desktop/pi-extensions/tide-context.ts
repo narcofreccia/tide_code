@@ -73,6 +73,29 @@ export default function tideContext(pi: ExtensionAPI) {
   let lastSnapshotTokens = 0;
   let lastContextWindow = 0;
 
+  // On a new/loaded session, write a FRESH snapshot immediately so the context indicator
+  // reflects this session's baseline instead of inheriting the previous conversation's
+  // count (the snapshot file is per-workspace and otherwise only rewritten on a `context`
+  // event — which doesn't fire until the first message is sent).
+  pi.on("session_start", async (_event, ctx) => {
+    const workspaceRoot = ctx.cwd;
+    const usage = ctx.getContextUsage?.();
+    const contextWindow = (usage && typeof usage.contextWindow === "number" && usage.contextWindow > 0)
+      ? usage.contextWindow
+      : 0;
+    const totalTokens = (usage && typeof usage.tokens === "number" && usage.tokens > 0) ? usage.tokens : 0;
+    const percent = (usage && typeof usage.percent === "number") ? usage.percent : null;
+    writeSnapshotAtomic(workspaceRoot, {
+      categories: [],
+      totalTokens,
+      contextWindow,
+      percent,
+      timestamp: new Date().toISOString(),
+    });
+    lastSnapshotTokens = totalTokens;
+    lastContextWindow = contextWindow > 0 ? contextWindow : 0;
+  });
+
   pi.on("context", async (event, ctx) => {
     const workspaceRoot = ctx.cwd;
     const messages = event.messages;

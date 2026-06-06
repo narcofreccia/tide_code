@@ -376,6 +376,101 @@ pub async fn start_pi(
     Ok((conn, child, stderr_task))
 }
 
+/// Spawn a ONE-SHOT, isolated pi process (its own context window, no saved session) and
+/// return the running child with stdout piped. Used by the Codebase Tutor so its analysis
+/// never runs in the main chat session. The caller reads stdout (for streaming) and keeps
+/// the handle to cancel; the agent's file writes under `.tide/` are picked up by watchers.
+pub async fn spawn_oneshot_pi(
+    workspace_root: &str,
+    extensions: &[String],
+    model: Option<&str>,
+    prompt: &str,
+) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
+    let pi_path = resolve_pi_path()?;
+    let (program, prefix_args) = resolve_command(&pi_path);
+    tracing::info!("Spawning one-shot pi: {} {:?} (cwd: {})", program, prefix_args, workspace_root);
+
+    let mut cmd = Command::new(&program);
+    for arg in &prefix_args {
+        cmd.arg(arg);
+    }
+
+    // Windows: set NODE_PATH so the directly-invoked node entry resolves deps (mirrors start_pi).
+    #[cfg(windows)]
+    if !prefix_args.is_empty() {
+        let js_path = PathBuf::from(&prefix_args[0]);
+        if let Some(pkg_dir) = js_path.parent().and_then(|p| p.parent()) {
+            let mut node_path_parts: Vec<String> = vec![];
+            let pkg_node_modules = pkg_dir.join("node_modules");
+            if pkg_node_modules.exists() {
+                node_path_parts.push(pkg_node_modules.to_string_lossy().to_string());
+            }
+            let mut ancestor = pkg_dir.to_path_buf();
+            for _ in 0..5 {
+                if let Some(parent) = ancestor.parent() {
+                    let pnpm_modules = parent.join("node_modules");
+                    if pnpm_modules.exists() && !node_path_parts.contains(&pnpm_modules.to_string_lossy().to_string()) {
+                        node_path_parts.push(pnpm_modules.to_string_lossy().to_string());
+                    }
+                    ancestor = parent.to_path_buf();
+                } else {
+                    break;
+                }
+            }
+            if !node_path_parts.is_empty() {
+                cmd.env("NODE_PATH", node_path_parts.join(";"));
+            }
+        }
+    }
+
+    if let Some(assets_dir) = resolve_pi_assets_dir() {
+        cmd.env("PI_PACKAGE_DIR", &assets_dir);
+    }
+
+    // One-shot, headless, no persisted session.
+    cmd.arg("--mode").arg("json").arg("-p").arg("--no-session");
+    if let Some(m) = model {
+        cmd.arg("--model").arg(m);
+    }
+    for ext in extensions {
+        cmd.arg("-e").arg(ext);
+    }
+
+    inject_service_keys(&mut cmd);
+    if let Some(provider) = inject_api_keys(&mut cmd) {
+        let pi_auth_path = dirs::home_dir().map(|h| h.join(".pi").join("agent").join("auth.json"));
+        let has_pi_oauth = pi_auth_path
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+            .map(|val| val.as_object().map_or(false, |obj| !obj.is_empty()))
+            .unwrap_or(false);
+        if !has_pi_oauth {
+            cmd.arg("--provider").arg(provider);
+        }
+    }
+    cmd.env("TIDE_PI_BINARY", &pi_path);
+
+    // Task/prompt as the final positional argument.
+    cmd.arg(prompt);
+
+    cmd.current_dir(workspace_root);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    // Do NOT kill on drop: these are short, fire-and-forget tasks. The caller may replace
+    // the stored handle with a newer run (e.g. opening a lesson while a build finishes) and
+    // we don't want that to kill the in-flight process — it should run to completion.
+    cmd.kill_on_drop(false);
+
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
+    let child = cmd.spawn()?;
+    tracing::info!("One-shot pi started (pid: {:?})", child.id());
+    Ok(child)
+}
+
 fn target_triple() -> &'static str {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     { "aarch64-apple-darwin" }
